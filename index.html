@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OFDM Receiver</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6b66; --faint: #9a9993; --line: #e2e1dc;
+    --ok: #2f8f5b; --bad: #c8463d; --idle: #e4e3de; --accent: #2d5fd3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151514; --panel: #1f1f1d; --ink: #ecebe6; --muted: #a3a29c; --faint: #75746f; --line: #343431;
+      --ok: #4cb27b; --bad: #e0675d; --idle: #34342f; --accent: #7aa2ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 16px 16px 40px; }
+
+  header { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+  h1 { font-size: 16px; font-weight: 650; margin: 0 auto 0 0; }
+  select { font: inherit; font-size: 13px; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 8px; max-width: 220px; min-width: 0; }
+  .icon { width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel);
+    color: var(--ink); display: grid; place-items: center; cursor: pointer; flex: none; padding: 0; }
+  .icon svg { width: 20px; height: 20px; }
+  .icon.live { background: var(--bad); border-color: var(--bad); color: #fff; }
+  .icon:disabled { opacity: .45; cursor: default; }
+  .icon:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #stopIcon { display: none; }
+  .icon.live #micIcon { display: none; }
+  .icon.live #stopIcon { display: block; }
+
+  .stage { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .view { aspect-ratio: 1; display: grid; place-items: center; background: var(--idle); position: relative; }
+  .view img { width: 100%; height: 100%; object-fit: contain; display: none; }
+  .view.has-image img { display: block; }
+  .view pre { display: none; margin: 0; padding: 16px; width: 100%; height: 100%; overflow-y: auto; background: var(--panel);
+    white-space: pre-wrap; overflow-wrap: anywhere; font: 15px/1.6 ui-serif, Georgia, serif; }
+  .view.has-text pre { display: block; }
+  .view .missing { color: var(--faint); }
+  .placeholder { color: var(--muted); font-size: 14px; text-align: center; padding: 16px; }
+  .view.has-image .placeholder, .view.has-text .placeholder { display: none; }
+  canvas#bytemap { display: block; width: 100%; height: 6px; }
+
+  .readout { margin-top: 10px; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted);
+    font-variant-numeric: tabular-nums; }
+  .readout .row { display: flex; flex-wrap: wrap; column-gap: 14px; }
+  .readout b { color: var(--ink); font-weight: 600; }
+  .readout .ok { color: var(--ok); } .readout .bad { color: var(--bad); }
+  .frames { display: flex; flex-wrap: wrap; gap: 2px; margin: 6px 0; }
+  .frames span { width: 7px; height: 7px; border-radius: 1px; background: var(--idle); }
+  .frames span.ok { background: var(--ok); } .frames span.bad { background: var(--bad); }
+  #log { margin: 4px 0 0; color: var(--faint); white-space: pre-wrap; max-height: 5.6em; overflow-y: auto; }
+  .footer { margin-top: 6px; color: var(--faint); }
+  .footer button { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
+  #warn { color: var(--bad); }
+  #warn:empty { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>OFDM Receiver</h1>
+    <select id="device" hidden aria-label="Microphone"></select>
+    <button class="icon" id="toggle" disabled title="Start listening" aria-label="Start listening">
+      <svg id="micIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      <svg id="stopIcon" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+    </button>
+  </header>
+
+  <section class="stage">
+    <div class="view" id="view">
+      <img id="image" alt="Received image">
+      <pre id="text"></pre>
+      <div class="placeholder" id="placeholder">Press the microphone to listen.<br>A received image or text appears here.</div>
+    </div>
+    <canvas id="bytemap" aria-label="Which bytes of the message have arrived"></canvas>
+  </section>
+
+  <div class="readout">
+    <div id="warn"></div>
+    <div class="row">
+      <span>in <b id="level">–</b></span>
+      <span>pk <b id="peak">–</b></span>
+      <span>agc <b id="agc">–</b></span>
+      <span>rx <b id="state">–</b></span>
+      <span>Δf <b id="offset">–</b></span>
+      <span>t <b id="time">–</b></span>
+    </div>
+    <div class="row">
+      <span>frames <b id="frames">–</b></span>
+      <span>snr <b id="snr">–</b></span>
+      <span>avg <b id="snrAvg">–</b></span>
+      <span>data <b id="bytes">–</b></span>
+      <span id="kind"></span>
+    </div>
+    <div class="frames" id="frameStrip" aria-label="Frames: green decoded, red failed"></div>
+    <pre id="log"></pre>
+    <div class="footer"><span id="layout">Loading the receiver…</span> ·
+      <button id="replay">replay a WAV</button><input type="file" id="file" accept="audio/*,.wav" hidden></div>
+  </div>
+</main>
+
+<script type="module">
+// The layout must match the transmitter's; override with e.g. ?carrier=5000&subcarriers=100&prefix=20 (for a mic that stops at 8 kHz).
+const params = new URLSearchParams(location.search);
+const layout = {
+  qam: params.get('qam') ?? 'qpsk',
+  carrier: Number(params.get('carrier') ?? 14000),
+  symbols: Number(params.get('symbols') ?? 8),
+  fft: Number(params.get('fft') ?? 256),
+  subcarriers: Number(params.get('subcarriers') ?? 100),
+  prefix: Number(params.get('prefix') ?? 20),
+};
+const RATE = 48000;
+const MISSING = '░';
+
+const $ = id => document.getElementById(id);
+const worker = new Worker('worker.js', { type: 'module' });
+let audio = null, stream = null, replaying = false;
+let framesOk = 0, framesTotal = 0, snrSum = 0;
+let message = null;   // {total, bytes, have, received, shown}
+
+worker.onmessage = ({ data }) => {
+  if (data.type === 'configured') {
+    $('layout').textContent = data.description;
+    $('toggle').disabled = false;
+  } else if (data.type === 'events') {
+    data.events.forEach(show);
+    if (data.last) {
+      replaying = false;
+      log('replay finished');
+    }
+  }
+};
+worker.onerror = e => { $('warn').textContent = 'The receiver failed to load: ' + e.message; };
+
+function reset() {
+  framesOk = framesTotal = snrSum = 0;
+  message = null;
+  $('frameStrip').replaceChildren();
+  $('log').textContent = '';
+  $('warn').textContent = '';
+  for (const id of ['level', 'peak', 'agc', 'state', 'offset', 'time', 'frames', 'snr', 'snrAvg', 'bytes']) $(id).textContent = '–';
+  $('kind').textContent = '';
+  $('view').className = 'view';
+  $('text').replaceChildren();
+  $('image').removeAttribute('src');
+  drawByteMap();
+  worker.postMessage({ type: 'configure', layout });
+}
+
+function log(line) {
+  const el = $('log');
+  el.textContent += (el.textContent ? '\n' : '') + line;
+  el.scrollTop = el.scrollHeight;
+}
+
+const signed = (x, digits) => (x >= 0 ? '+' : '') + x.toFixed(digits);
+
+function show(e) {
+  if (e.type === 'level') {
+    $('level').textContent = `${e.rmsDb.toFixed(0)} dBFS`;
+    $('peak').textContent = `${e.peakDb.toFixed(0)}`;
+    $('agc').textContent = `${e.agc === 'TRACKING' ? 'trk' : 'acq'} ${signed(e.gainDb, 0)} dB`;
+    $('state').textContent = e.state.toLowerCase();
+    $('state').className = e.state === 'TRACKING' ? 'ok' : '';
+    $('offset').textContent = `${signed(e.offsetHz, 2)} Hz`;
+    $('time').textContent = `${e.seconds.toFixed(0)} s`;
+  } else if (e.type === 'frame') {
+    framesTotal++;
+    snrSum += e.snrDb;
+    if (e.ok) framesOk++;
+    $('frames').textContent = `${framesOk}/${framesTotal} (${Math.round(100 * framesOk / framesTotal)}%)`;
+    $('snr').textContent = `${e.snrDb.toFixed(1)} dB`;
+    $('snrAvg').textContent = `${(snrSum / framesTotal).toFixed(1)} dB`;
+    const box = document.createElement('span');
+    box.className = e.ok ? 'ok' : 'bad';
+    box.title = `${e.seconds.toFixed(1)} s: ${e.ok ? 'decoded' : 'failed'}` +
+      (e.offset !== undefined ? ` (from byte ${e.offset})` : '') + `, SNR ${e.snrDb.toFixed(1)} dB`;
+    $('frameStrip').append(box);
+    if (e.data !== undefined) addChunk(e);
+  } else if (e.type === 'missed') {
+    log(`${e.seconds.toFixed(1)} s  missed a preamble`);
+  } else if (e.type === 'lockLost') {
+    log(`${e.seconds.toFixed(1)} s  lost lock, searching again`);
+  }
+}
+
+// --- The message: chunks arrive in any order (and repeat while the transmitter loops), so they are
+// placed by offset and the content is redrawn from what has arrived.
+
+function addChunk(e) {
+  if (!message || message.total !== e.total) {
+    message = { total: e.total, bytes: new Uint8Array(e.total), have: new Uint8Array(e.total), received: 0, shown: -1 };
+  }
+  const data = Uint8Array.from(atob(e.data), c => c.charCodeAt(0));
+  for (let i = 0; i < data.length; i++) {
+    if (!message.have[e.offset + i]) {
+      message.have[e.offset + i] = 1;
+      message.received++;
+    }
+    message.bytes[e.offset + i] = data[i];
+  }
+  $('bytes').textContent = `${message.received}/${message.total} B (${Math.round(100 * message.received / message.total)}%)`;
+  drawByteMap();
+  render();
+}
+
+function kindOf(b, have) {
+  if (!have[0] || !have[3]) return null;
+  if (b[0] === 0xFF && b[1] === 0xD8) return 'image/jpeg';
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return 'image/png';
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return 'image/gif';
+  return 'text';
+}
+
+// Where a progressive JPEG's prefix can be cut so that only whole scans remain: before the last
+// segment marker (tables or start of scan) after the first scan began. Entropy-coded data never
+// contains FF followed by these, so a byte search finds them. -1 if no scan is complete yet.
+function lastScanBoundary(bytes, end) {
+  let firstScan = -1, cut = -1;
+  for (let i = 2; i + 1 < end; i++) {
+    if (bytes[i] !== 0xFF) continue;
+    const marker = bytes[i + 1];
+    if (marker === 0xDA && firstScan < 0) firstScan = i;
+    else if (firstScan >= 0 && (marker === 0xDA || marker === 0xC4 || marker === 0xDB || marker === 0xD9)) cut = i;
+  }
+  return cut;
+}
+
+function render() {
+  const m = message;
+  const kind = kindOf(m.bytes, m.have);
+  if (!kind) {
+    $('kind').textContent = 'waiting for the start of the file';
+    return;
+  }
+  if (kind === 'text') {
+    $('view').className = 'view has-text';
+    $('kind').textContent = 'text';
+    showText(m);
+    return;
+  }
+  // An image decodes from the start, so it shows what has arrived without a gap. A progressive JPEG
+  // is cut after its last whole scan and closed with an end-of-image marker: the whole picture at
+  // the detail received so far. A baseline JPEG (one scan) is cut where the gap starts, which
+  // browsers show as its top rows. Other formats wait until they are complete.
+  let prefix = m.have.indexOf(0);
+  if (prefix < 0) prefix = m.total;
+  let end = prefix;
+  if (prefix < m.total) {
+    if (kind !== 'image/jpeg') return;
+    const cut = lastScanBoundary(m.bytes, prefix);
+    end = cut > 0 ? cut : prefix;
+  }
+  if (end <= m.shown) return;
+  m.shown = end;
+  const parts = [m.bytes.subarray(0, end)];
+  if (end < m.total) parts.push(new Uint8Array([0xFF, 0xD9]));
+  const img = $('image');
+  const old = img.src;
+  img.onload = () => {
+    if (old) URL.revokeObjectURL(old);
+    $('view').className = 'view has-image';
+    $('kind').textContent = `${kind.slice(6)} ${img.naturalWidth}×${img.naturalHeight}` +
+      (end < m.total ? `, first ${end} B` : '');
+  };
+  img.onerror = () => { $('kind').textContent = `${kind.slice(6)}: first ${end} B do not decode yet`; };
+  img.src = URL.createObjectURL(new Blob(parts, { type: kind }));
+}
+
+function showText(m) {
+  const out = $('text');
+  out.replaceChildren();
+  const decoder = new TextDecoder();
+  let i = 0;
+  while (i < m.total) {
+    let end = i;
+    while (end < m.total && m.have[end] === m.have[i]) end++;
+    if (m.have[i]) {
+      out.append(decoder.decode(m.bytes.subarray(i, end)));
+    } else {
+      const span = document.createElement('span');
+      span.className = 'missing';
+      span.textContent = MISSING.repeat(end - i);
+      out.append(span);
+    }
+    i = end;
+  }
+}
+
+function drawByteMap() {
+  const canvas = $('bytemap');
+  const width = canvas.clientWidth * devicePixelRatio;
+  canvas.width = width;
+  canvas.height = 6 * devicePixelRatio;
+  const ctx = canvas.getContext('2d');
+  const style = getComputedStyle(document.documentElement);
+  ctx.fillStyle = style.getPropertyValue('--idle');
+  ctx.fillRect(0, 0, width, canvas.height);
+  if (!message) return;
+  ctx.fillStyle = style.getPropertyValue('--ok');
+  for (let x = 0; x < width; x++) {
+    const from = Math.floor(x / width * message.total);
+    const to = Math.max(from + 1, Math.floor((x + 1) / width * message.total));
+    let got = 0;
+    for (let i = from; i < to; i++) got += message.have[i];
+    if (got) {
+      ctx.globalAlpha = got / (to - from);
+      ctx.fillRect(x, 0, 1, canvas.height);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+// --- Audio in
+
+async function listDevices() {
+  const inputs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput');
+  const select = $('device');
+  const current = select.value;
+  select.replaceChildren(...inputs.map((d, i) => new Option(d.label || `Microphone ${i + 1}`, d.deviceId)));
+  if (current) select.value = current;
+  select.hidden = inputs.length < 2;
+}
+
+async function start() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    $('warn').textContent = 'This browser cannot use the microphone here; the page must be opened over https or from localhost.';
+    return;
+  }
+  reset();
+  setLive(true);
+  try {
+    const deviceId = $('device').value;
+    stream = await navigator.mediaDevices.getUserMedia({ audio: {
+      // The browser's voice processing would treat the modem signal as noise or echo.
+      echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1,
+      ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+    } });
+    audio = new AudioContext({ sampleRate: RATE, latencyHint: 'playback' });
+    if (audio.sampleRate !== RATE) {
+      $('warn').textContent = `The browser runs audio at ${audio.sampleRate} Hz, not ${RATE} Hz; the receiver will not lock.`;
+    }
+    await audio.audioWorklet.addModule('capture.js');
+    const capture = new AudioWorkletNode(audio, 'capture', { numberOfOutputs: 1 });
+    capture.port.onmessage = ({ data }) => worker.postMessage({ type: 'samples', samples: data }, [data.buffer]);
+    const mute = audio.createGain();
+    mute.gain.value = 0;
+    audio.createMediaStreamSource(stream).connect(capture).connect(mute).connect(audio.destination);
+    const track = stream.getAudioTracks()[0];
+    const s = track.getSettings();
+    log(`listening on ${track.label || 'the microphone'}` +
+      (s.echoCancellation || s.noiseSuppression || s.autoGainControl ? ' (warning: voice processing is still on)' : ''));
+    await listDevices();
+  } catch (err) {
+    $('warn').textContent = `Could not start the microphone: ${err.message}`;
+    stop();
+  }
+}
+
+function stop() {
+  stream?.getTracks().forEach(t => t.stop());
+  audio?.close();
+  stream = audio = null;
+  setLive(false);
+}
+
+function setLive(live) {
+  const button = $('toggle');
+  button.classList.toggle('live', live);
+  button.title = live ? 'Stop' : 'Start listening';
+  button.setAttribute('aria-label', button.title);
+}
+
+async function replay(file) {
+  if (replaying) return;
+  stop();
+  reset();
+  replaying = true;
+  log(`replaying ${file.name}`);
+  // Decoding through a 48 kHz context resamples the file to the receiver's rate if need be.
+  const decoded = await new OfflineAudioContext(1, 1, RATE).decodeAudioData(await file.arrayBuffer());
+  const samples = decoded.getChannelData(0);
+  const block = 4800;
+  for (let i = 0; i < samples.length; i += block) {
+    const piece = samples.slice(i, i + block);
+    worker.postMessage({ type: 'samples', samples: piece, last: i + block >= samples.length }, [piece.buffer]);
+  }
+}
+
+$('toggle').onclick = () => (stream ? stop() : start());
+$('device').onchange = () => { if (stream) { stop(); start(); } };
+$('replay').onclick = () => $('file').click();
+$('file').onchange = e => { if (e.target.files[0]) replay(e.target.files[0]); e.target.value = ''; };
+addEventListener('resize', drawByteMap);
+reset();
+</script>
+</body>
+</html>
