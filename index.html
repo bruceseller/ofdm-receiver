@@ -98,6 +98,7 @@
       <span id="kind"></span>
     </div>
     <div class="frames" id="frameStrip" aria-label="Frames: green decoded, red failed"></div>
+    <div class="frames" id="frameStrip1" aria-label="Second layer's frames: green decoded, red failed" hidden></div>
     <pre id="log"></pre>
     <div class="footer"><span id="layout">Loading the receiver…</span> ·
       <button id="replay">replay a WAV</button><input type="file" id="file" accept="audio/*,.wav" hidden></div>
@@ -105,14 +106,15 @@
 </main>
 
 <script type="module">
-// The layout must match the transmitter's; override with e.g. ?carrier=5000&subcarriers=100&prefix=20 (for a mic that stops at 8 kHz).
+// The layout must match the transmitter's. The default is two layers: QPSK on the even subcarriers, 16-QAM on the odd
+// ones (pure/ gives one constellation on 100 subcarriers). Override with e.g. ?carrier=5000 (for a mic that stops at 8 kHz).
 const params = new URLSearchParams(location.search);
 const layout = {
-  qam: params.get('qam') ?? 'qpsk',
+  qam: (params.get('qam') ?? 'qpsk+16').replace(/[ ,]/g, '+'),   // two layers as ?qam=qpsk,16 (a + in a URL reads as a space)
   carrier: Number(params.get('carrier') ?? 14000),
   symbols: Number(params.get('symbols') ?? 8),
   fft: Number(params.get('fft') ?? 256),
-  subcarriers: Number(params.get('subcarriers') ?? 100),
+  subcarriers: Number(params.get('subcarriers') ?? 200),
   prefix: Number(params.get('prefix') ?? 20),
 };
 const RATE = 48000;
@@ -121,7 +123,8 @@ const MISSING = '░';
 const $ = id => document.getElementById(id);
 const worker = new Worker('worker.js', { type: 'module' });
 let audio = null, stream = null, replaying = false;
-let framesOk = 0, framesTotal = 0, snrSum = 0;
+// Per layer: frames sent in two layers (?qam=qpsk+16) give a frame event for each.
+let framesOk = [0, 0], framesTotal = [0, 0], snrSum = 0;
 let message = null;   // {total, bytes, have, received, shown}
 
 worker.onmessage = ({ data }) => {
@@ -139,9 +142,13 @@ worker.onmessage = ({ data }) => {
 worker.onerror = e => { $('warn').textContent = 'The receiver failed to load: ' + e.message; };
 
 function reset() {
-  framesOk = framesTotal = snrSum = 0;
+  framesOk = [0, 0];
+  framesTotal = [0, 0];
+  snrSum = 0;
   message = null;
   $('frameStrip').replaceChildren();
+  $('frameStrip1').replaceChildren();
+  $('frameStrip1').hidden = !layout.qam.includes('+');
   $('log').textContent = '';
   $('warn').textContent = '';
   for (const id of ['level', 'peak', 'agc', 'state', 'offset', 'time', 'frames', 'snr', 'snrAvg', 'bytes']) $(id).textContent = '–';
@@ -171,17 +178,23 @@ function show(e) {
     $('offset').textContent = `${signed(e.offsetHz, 2)} Hz`;
     $('time').textContent = `${e.seconds.toFixed(0)} s`;
   } else if (e.type === 'frame') {
-    framesTotal++;
-    snrSum += e.snrDb;
-    if (e.ok) framesOk++;
-    $('frames').textContent = `${framesOk}/${framesTotal} (${Math.round(100 * framesOk / framesTotal)}%)`;
-    $('snr').textContent = `${e.snrDb.toFixed(1)} dB`;
-    $('snrAvg').textContent = `${(snrSum / framesTotal).toFixed(1)} dB`;
+    const layer = e.layer ?? 0;
+    framesTotal[layer]++;
+    if (e.ok) framesOk[layer]++;
+    const names = layout.qam.split('+');
+    $('frames').textContent = names.map((name, l) => (names.length > 1 ? name + ' ' : '') +
+      `${framesOk[l]}/${framesTotal[l]}` + (framesTotal[l] ? ` (${Math.round(100 * framesOk[l] / framesTotal[l])}%)` : ''))
+      .join(' · ');
+    if (layer === 0) {   // both layers see the same channel; the SNR readout follows the first
+      snrSum += e.snrDb;
+      $('snr').textContent = `${e.snrDb.toFixed(1)} dB`;
+      $('snrAvg').textContent = `${(snrSum / framesTotal[0]).toFixed(1)} dB`;
+    }
     const box = document.createElement('span');
     box.className = e.ok ? 'ok' : 'bad';
-    box.title = `${e.seconds.toFixed(1)} s: ${e.ok ? 'decoded' : 'failed'}` +
+    box.title = `${e.seconds.toFixed(1)} s, ${names[layer] ?? 'layer ' + layer}: ${e.ok ? 'decoded' : 'failed'}` +
       (e.offset !== undefined ? ` (from byte ${e.offset})` : '') + `, SNR ${e.snrDb.toFixed(1)} dB`;
-    $('frameStrip').append(box);
+    $(layer === 0 ? 'frameStrip' : 'frameStrip1').append(box);
     if (e.data !== undefined) addChunk(e);
   } else if (e.type === 'missed') {
     log(`${e.seconds.toFixed(1)} s  missed a preamble`);

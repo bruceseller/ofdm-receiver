@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OFDM Receiver</title>
+<script>
+// One constellation on every subcarrier, as before the two-layer default: QPSK on 100 subcarriers,
+// or ?qam=16 / ?qam=64. Any other parameter passes through to the receiver page.
+const params = new URLSearchParams({ qam: 'qpsk', subcarriers: '100' });
+for (const [key, value] of new URLSearchParams(location.search)) params.set(key, value);
+location.replace('../?' + params);
+</script>
+</head>
+<body style="background: #f7f7f5">
+<noscript>The receiver needs JavaScript.</noscript>
+</body>
+</html>
