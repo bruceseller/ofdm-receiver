@@ -1,7 +1,7 @@
 // Runs the receiver (ofdm.js, compiled from the Java by TeaVM) off the page's main thread.
 // In: {type: 'configure', layout} and {type: 'samples', samples: Float32Array at 48 kHz}.
 // Out: {type: 'configured', description} and {type: 'events', events: [...]}.
-import { configure, push } from './ofdm.js';
+import { configure, push } from './ofdm.js?v=fd07a309d6';
 
 onmessage = ({ data }) => {
   if (data.type === 'configure') {

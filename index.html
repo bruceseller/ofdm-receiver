@@ -121,7 +121,7 @@ const RATE = 48000;
 const MISSING = '░';
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('worker.js', { type: 'module' });
+const worker = new Worker('worker.js?v=fd07a309d6', { type: 'module' });
 let audio = null, stream = null, replaying = false;
 // Per layer: frames sent in two layers (?qam=qpsk+16) give a frame event for each.
 let framesOk = [0, 0], framesTotal = [0, 0], snrSum = 0;
