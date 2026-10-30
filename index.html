@@ -128,7 +128,7 @@ const RATE = 48000;
 const MISSING = '░';
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('worker.js?v=f60a4e5ef0', { type: 'module' });
+const worker = new Worker('worker.js?v=ba071bfd35', { type: 'module' });
 let audio = null, stream = null, replaying = false;
 // Per layer: frames sent in two layers (?qam=qpsk+16) give a frame event for each.
 let framesOk = [0, 0], framesTotal = [0, 0], snrSum = 0;
@@ -209,7 +209,10 @@ function show(e) {
     log(`${e.seconds.toFixed(1)} s  proposed ${e.summary.replace(/^map \d+: /, `map ${e.id}: `)}, ${e.bitsPerSecond} bit/s`);
   } else if (e.type === 'burst') {
     playBurst(e.samples);
-    log(`${e.seconds.toFixed(1)} s  sent map ${e.id ?? '?'}`);
+    if (e.kind !== 'status') log(`${e.seconds.toFixed(1)} s  sent map ${e.id ?? '?'}`);
+  } else if (e.type === 'report') {
+    log(`${e.seconds.toFixed(1)} s  ` + (e.done ? 'complete: told the sender it can stop'
+      : `asked the sender for the ${e.missing} missing block${e.missing === 1 ? '' : 's'}`));
   } else if (e.type === 'missed') {
     log(`${e.seconds.toFixed(1)} s  missed a preamble`);
   } else if (e.type === 'lockLost') {

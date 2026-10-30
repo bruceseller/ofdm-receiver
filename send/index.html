@@ -100,6 +100,11 @@
       <span>frames <b id="frames">–</b></span>
       <span>passes <b id="passes">–</b></span>
     </div>
+    <div class="row" id="backRow" hidden>
+      <span>mic <b id="mic">–</b></span>
+      <span>map <b id="map">–</b></span>
+      <span>heard <b id="heard">–</b></span>
+    </div>
     <pre id="log"></pre>
     <div class="footer"><span id="description">Loading the transmitter…</span> ·
       <a id="receiverLink" href="../">open the receiver with this layout</a> ·
@@ -113,13 +118,20 @@
 // pass at the layout's rate, and sent as a small thumbnail followed by the full image: browsers only make baseline
 // JPEGs, which would otherwise show only their top rows until complete. The receiver shows the thumbnail scaled up
 // until the full image has arrived. ?carrier= moves the band (5000 for a mic that stops at 8 kHz).
+// With bit loading, the page also listens on its microphone for the receiver's bursts around ?burst= Hz (default
+// 10000: quiet to the ear, above room noise, and the speaker's harmonics fall above the 14 kHz band; a mic that
+// stops at 8 kHz needs 3200): maps for the next frames, the blocks the receiver still lacks (sent next), and done
+// (sending stops).
 const params = new URLSearchParams(location.search);
 const carrier = Number(params.get('carrier') ?? 14000);
+const burst = Number(params.get('burst') ?? 10000);
 // Rates (information bits per second) are the layouts' at map 0; bit loading needs the backchannel to go faster.
 const LAYOUTS = [
   { name: 'Two layers, QPSK + 16-QAM, 200 subcarriers', qam: 'qpsk+16', subcarriers: 200, rate: 3176, receiver: '../' },
   { name: 'QPSK, 100 subcarriers', qam: 'qpsk', subcarriers: 100, rate: 1056, receiver: '../pure/' },
-  { name: 'Bit loading, 200 subcarriers (QPSK until maps come back)', qam: 'adapt', subcarriers: 200, rate: 2120,
+  { name: 'Bit loading, 200 subcarriers, sized for QPSK', qam: 'adapt', subcarriers: 200, rate: 2120,
+    receiver: '../adapt/?subcarriers=200' },
+  { name: 'Bit loading, 200 subcarriers, sized for a phone close by', qam: 'adapt', subcarriers: 200, rate: 5000,
     receiver: '../adapt/?subcarriers=200' },
 ];
 const RATE = 48000;
@@ -131,9 +143,10 @@ const QUALITIES = [0.75, 0.6, 0.5, 0.4, 0.3];
 const MIN_QUALITY = 0.4;     // a smaller image at this quality looks better than a larger one below it
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('../worker.js?v=f60a4e5ef0', { type: 'module' });
+const worker = new Worker('../worker.js?v=ba071bfd35', { type: 'module' });
 let file = null, message = null;      // the chosen file, and the bytes that will be sent
 let audio = null, timer = null, wakeLock = null, scheduled = 0, waiting = false, started = 0, frames = 0;
+let mic = null, micPeak = 0;
 
 for (const [i, l] of LAYOUTS.entries()) $('layout').append(new Option(l.name, i));
 const layout = () => LAYOUTS[Number($('layout').value)];
@@ -148,6 +161,8 @@ function log(line) {
 function updateLink() {
   const url = new URL(layout().receiver, location.href);
   if (carrier !== 14000) url.searchParams.set('carrier', carrier);
+  if (layout().qam === 'adapt') url.searchParams.set('burst', burst);
+  $('backRow').hidden = layout().qam !== 'adapt';
   $('receiverLink').href = url.href;
 }
 
@@ -257,8 +272,35 @@ worker.onmessage = ({ data }) => {
     scheduled += buffer.duration;
     for (const e of data.events) if (e.type === 'txFrame') frames++;
     fill();
+  } else if (data.type === 'events') {
+    data.events.forEach(heard);
   }
 };
+
+/** A burst from the receiver. */
+function heard(e) {
+  const at = `${e.seconds.toFixed(1)} s`;
+  if (e.ignored) {
+    log(`${at}  ignored a ${e.kind} burst from before this transmission`);
+  } else if (e.kind === 'status') {
+    if (e.otherMessage) {
+      log(`${at}  heard a report on another message`);
+    } else if (e.done) {
+      const t = audio ? audio.currentTime - started : 0;
+      log(`${at}  the receiver has it all: delivered in ${t.toFixed(0)} s`);
+      $('heard').textContent = 'done';
+      stop();
+      $('description').textContent = `Delivered ${message.length} bytes in ${t.toFixed(0)} s.`;
+    } else {
+      log(`${at}  the receiver lacks ${e.missing} block${e.missing === 1 ? '' : 's'}: sending them next`);
+      $('heard').textContent = `${e.missing} missing`;
+    }
+  } else {
+    $('map').textContent = `${e.id}, ${e.bitsPerSecond} bit/s`;
+    $('heard').textContent = `${e.kind === 'fallback' ? 'fallback' : 'map ' + e.id} (${e.correlation})`;
+    log(`${at}  ${e.kind === 'fallback' ? 'fallback to map 0' : 'map ' + e.id}: ${e.bitsPerSecond} bit/s next`);
+  }
+}
 worker.onerror = e => { $('warn').textContent = 'The transmitter failed to load: ' + e.message; };
 
 function fill() {
@@ -270,6 +312,10 @@ function fill() {
 
 function tick() {
   fill();
+  if (mic) {
+    $('mic').textContent = `${(20 * Math.log10(micPeak + 1e-9)).toFixed(0)} dBFS pk`;
+    micPeak = 0;
+  }
   const t = audio.currentTime - started;
   $('time').textContent = `${t.toFixed(0)} s`;
   const frameSeconds = 0.752;
@@ -292,7 +338,8 @@ async function start() {
   }
   const l = layout();
   worker.postMessage({ type: 'transmit', message: message.buffer.slice(0), lead: LEAD_SECONDS,
-    layout: { qam: l.qam, carrier, symbols: 8, fft: 256, subcarriers: l.subcarriers, prefix: 20 } });
+    layout: { qam: l.qam, carrier, symbols: 8, fft: 256, subcarriers: l.subcarriers, prefix: 20, burst } });
+  if (l.qam === 'adapt') await listen();
   started = audio.currentTime;
   scheduled = 0;
   frames = 0;
@@ -303,7 +350,31 @@ async function start() {
   log(`sending ${message.length} bytes`);
 }
 
+/** The microphone, for the receiver's bursts: on the same AudioContext, through the capture worklet. */
+async function listen() {
+  try {
+    if (navigator.audioSession) navigator.audioSession.type = 'play-and-record';
+    mic = await navigator.mediaDevices.getUserMedia({ audio: {
+      echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
+    await audio.audioWorklet.addModule('../capture.js');
+    const capture = new AudioWorkletNode(audio, 'capture', { numberOfOutputs: 1 });
+    capture.port.onmessage = ({ data }) => {
+      for (let i = 0; i < data.length; i++) micPeak = Math.max(micPeak, Math.abs(data[i]));
+      worker.postMessage({ type: 'heard', samples: data }, [data.buffer]);
+    };
+    const mute = audio.createGain();
+    mute.gain.value = 0;
+    audio.createMediaStreamSource(mic).connect(capture).connect(mute).connect(audio.destination);
+    log(`listening on ${mic.getAudioTracks()[0].label || 'the microphone'} for bursts around ${burst} Hz`);
+  } catch (err) {
+    mic = null;
+    $('warn').textContent = `No microphone (${err.message}): sending without the backchannel, on map 0.`;
+  }
+}
+
 function stop() {
+  mic?.getTracks().forEach(t => t.stop());
+  mic = null;
   clearInterval(timer);
   audio?.close();
   wakeLock?.release();
