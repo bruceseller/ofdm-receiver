@@ -18,7 +18,7 @@
     font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
   main { max-width: 640px; margin: 0 auto; padding: 16px 16px 40px; }
   header { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
-  h1 { font-size: 16px; font-weight: 650; margin: 0 auto 0 0; }
+  h1 { font-size: 16px; font-weight: 650; margin: 0 auto 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   select, input[type=range] { font: inherit; font-size: 13px; color: var(--ink); }
   select { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; max-width: 100%; }
   .icon { width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel);
@@ -47,25 +47,53 @@
   .controls .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .controls label { display: flex; align-items: center; gap: 8px; }
   input[type=range] { width: 160px; accent-color: var(--accent); }
-  .readout { margin-top: 10px; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted);
+  .status { display: flex; align-items: center; gap: 8px; flex: none; white-space: nowrap;
+    font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .status[hidden] { display: none; }
+  .ring { width: 44px; height: 44px; flex: none; }
+  /* The return path: hollow while listening with nothing heard from the receiver, solid once a burst has been, and a
+     blink on each burst. */
+  #link { width: 12px; height: 12px; flex: none; overflow: visible; }
+  #link[hidden] { display: none; }
+  #link circle { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+  #link.heard circle { fill: var(--accent); }
+  #link.blink circle { animation: blink .6s ease-out; transform-origin: center; transform-box: fill-box; }
+  @keyframes blink { 0% { transform: scale(1.8); opacity: .4; } 100% { transform: scale(1); opacity: 1; } }
+  .ring circle { fill: none; stroke-width: 4; }
+  .ring .track { stroke: var(--idle); }
+  .ring .done { stroke: var(--accent); stroke-linecap: round; transition: stroke-dashoffset .3s; }
+  .ring text { fill: var(--ink); font-size: 13px; font-weight: 600; text-anchor: middle; dominant-baseline: central; }
+  details.fold { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 8px; }
+  details.fold summary { cursor: pointer; font-size: 13px; color: var(--faint); }
+  .links { margin-top: 10px; font-size: 13px; color: var(--faint); }
+  .links a, .links button { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
+  .readout { margin-top: 6px; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted);
     font-variant-numeric: tabular-nums; }
   .readout b { color: var(--ink); font-weight: 600; }
   .readout .row { display: flex; flex-wrap: wrap; column-gap: 14px; }
   #log { margin: 4px 0 0; color: var(--faint); white-space: pre-wrap; max-height: 5.6em; overflow-y: auto; }
   .footer { margin-top: 6px; color: var(--faint); }
   .footer a, .footer button { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
-  #warn { color: var(--bad); }
+  #warn { color: var(--bad); font-size: 13px; margin-top: 10px; }
   #warn:empty { display: none; }
 </style>
 </head>
 <body>
 <main>
   <header>
-    <h1>OFDM Sender</h1>
     <button class="icon" id="toggle" disabled title="Send" aria-label="Send">
       <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
       <svg id="stopIcon" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
     </button>
+    <h1>OFDM Sender</h1>
+    <div class="status" id="status" hidden>
+      <span id="progressText"></span>
+      <svg id="link" viewBox="0 0 12 12" role="img" aria-label="Heard from the receiver" hidden><circle cx="6" cy="6" r="4.5"/></svg>
+      <svg class="ring" viewBox="0 0 52 52" role="img" aria-label="Message sent">
+        <circle class="track" cx="26" cy="26" r="22"/>
+        <circle class="done" id="ringArc" cx="26" cy="26" r="22" transform="rotate(-90 26 26)"/>
+        <text id="ringText" x="26" y="26">0%</text></svg>
+    </div>
   </header>
 
   <input type="file" id="file" accept="image/*,text/*,*/*">
@@ -81,15 +109,15 @@
 
   <div class="controls">
     <div class="row">
-      <label>Layout <select id="layout"></select></label>
-    </div>
-    <div class="row">
       <label>Time per pass <input type="range" id="seconds" min="8" max="90" step="1" value="25"> <b id="secondsValue">25 s</b></label>
     </div>
   </div>
 
+  <div id="warn"></div>
+
+  <details class="fold">
+  <summary>Details</summary>
   <div class="readout">
-    <div id="warn"></div>
     <div class="row">
       <span>sending <b id="what">–</b></span>
       <span>size <b id="bytes">–</b></span>
@@ -100,21 +128,22 @@
       <span>frames <b id="frames">–</b></span>
       <span>passes <b id="passes">–</b></span>
     </div>
-    <div class="row" id="backRow" hidden>
+    <div class="row" id="backRow">
       <span>mic <b id="mic">–</b></span>
       <span>map <b id="map">–</b></span>
       <span>heard <b id="heard">–</b></span>
     </div>
     <pre id="log"></pre>
-    <div class="footer"><span id="description">Loading the transmitter…</span> ·
-      <a id="receiverLink" href="../">open the receiver with this layout</a> ·
-      <button id="change">choose another file</button></div>
+    <div class="footer"><span id="description">Loading the transmitter…</span></div>
   </div>
+  </details>
+  <div class="links"><button id="change">Choose another file</button> · <a id="receiverLink" href="../">Receiver</a></div>
 </main>
 
 <script type="module">
 // Sends an image (or any file) as sound, for the receiver page to decode. The layout must match the receiver's:
-// the link below the readout opens the receiver with it. Images are scaled and JPEG-encoded to fit the time per
+// the receiver link below passes it on. The default is bit loading on 200 subcarriers, the receiver page's default;
+// others by parameter (?qam=qpsk,16 or ?qam=qpsk&subcarriers=100, with ?rate= their bit/s at map 0 to size images). Images are scaled and JPEG-encoded to fit the time per
 // pass at the layout's rate, and sent as a small thumbnail followed by the full image: browsers only make baseline
 // JPEGs, which would otherwise show only their top rows until complete. The receiver shows the thumbnail scaled up
 // until the full image has arrived. ?carrier= moves the band (5000 for a mic that stops at 8 kHz).
@@ -125,15 +154,12 @@
 const params = new URLSearchParams(location.search);
 const carrier = Number(params.get('carrier') ?? 14000);
 const burst = Number(params.get('burst') ?? 10000);
-// Rates (information bits per second) are the layouts' at map 0; bit loading needs the backchannel to go faster.
-const LAYOUTS = [
-  { name: 'Two layers, QPSK + 16-QAM, 200 subcarriers', qam: 'qpsk+16', subcarriers: 200, rate: 3176, receiver: '../' },
-  { name: 'QPSK, 100 subcarriers', qam: 'qpsk', subcarriers: 100, rate: 1056, receiver: '../pure/' },
-  { name: 'Bit loading, 200 subcarriers, sized for QPSK', qam: 'adapt', subcarriers: 200, rate: 2120,
-    receiver: '../adapt/?subcarriers=200' },
-  { name: 'Bit loading, 200 subcarriers, sized for a phone close by', qam: 'adapt', subcarriers: 200, rate: 5000,
-    receiver: '../adapt/?subcarriers=200' },
-];
+const qam = (params.get('qam') ?? 'adapt').replace(/[ ,]/g, '+');
+const subcarriers = Number(params.get('subcarriers') ?? 200);
+const adapt = qam === 'adapt';
+// The rate (information bits per second) images are sized for. With bit loading, a phone close by: the backchannel
+// takes the link well above map 0's 2120 bit/s.
+const rate = Number(params.get('rate') ?? (adapt ? 5000 : 2120));
 const RATE = 48000;
 const LEAD_SECONDS = 5;      // the message's start comes round about this long after the frames begin
 const MAX_BYTES = 65535;     // MessageFraming's limit
@@ -143,13 +169,12 @@ const QUALITIES = [0.75, 0.6, 0.5, 0.4, 0.3];
 const MIN_QUALITY = 0.4;     // a smaller image at this quality looks better than a larger one below it
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('../worker.js?v=6ea2302c13', { type: 'module' });
+const worker = new Worker('../worker.js?v=05863759e8', { type: 'module' });
 let file = null, message = null;      // the chosen file, and the bytes that will be sent
 let audio = null, timer = null, wakeLock = null, scheduled = 0, waiting = false, started = 0, frames = 0;
-let mic = null, micPeak = 0;
+let mic = null, micPeak = 0, sentBytes = 0, delivered = false;
+let confirmed = null;    // the share of the message the receiver last reported having, or null
 
-for (const [i, l] of LAYOUTS.entries()) $('layout').append(new Option(l.name, i));
-const layout = () => LAYOUTS[Number($('layout').value)];
 const seconds = () => Number($('seconds').value);
 
 function log(line) {
@@ -159,11 +184,22 @@ function log(line) {
 }
 
 function updateLink() {
-  const url = new URL(layout().receiver, location.href);
-  if (carrier !== 14000) url.searchParams.set('carrier', carrier);
-  if (layout().qam === 'adapt') url.searchParams.set('burst', burst);
-  $('backRow').hidden = layout().qam !== 'adapt';
+  const url = new URL('../', location.href);
+  for (const key of ['qam', 'subcarriers', 'carrier', 'burst']) if (params.has(key)) url.searchParams.set(key, params.get(key));
+  $('backRow').hidden = !adapt;
   $('receiverLink').href = url.href;
+}
+
+const RING = 2 * Math.PI * 22;
+
+/** The ring: the share of the message sent, held short of full until the receiver says it has it all. */
+function showProgress(share, text) {
+  const arc = $('ringArc');
+  arc.style.strokeDasharray = RING;
+  arc.style.strokeDashoffset = RING * (1 - share);
+  arc.style.visibility = share > 0 ? 'visible' : 'hidden';
+  $('ringText').textContent = `${Math.floor(100 * share)}%`;
+  $('progressText').textContent = text;
 }
 
 // --- What is sent
@@ -200,7 +236,8 @@ async function fit(bitmap, budget) {
 
 async function prepare() {
   if (!file) return;
-  const budget = Math.min(MAX_BYTES, Math.floor(layout().rate * seconds() / 8));
+  $('status').hidden = true;
+  const budget = Math.min(MAX_BYTES, Math.floor(rate * seconds() / 8));
   $('warn').textContent = '';
   let bitmap = null;
   if (file.type.startsWith('image/')) {
@@ -242,7 +279,7 @@ async function prepare() {
   }
   if (message) {
     $('bytes').textContent = `${message.length} B`;
-    $('pass').textContent = `${Math.round(message.length * 8 / layout().rate)} s at ${layout().rate} bit/s`;
+    $('pass').textContent = `${Math.round(message.length * 8 / rate)} s at ${rate} bit/s`;
   } else {
     $('bytes').textContent = $('pass').textContent = '–';
   }
@@ -270,7 +307,12 @@ worker.onmessage = ({ data }) => {
     scheduled = Math.max(scheduled, audio.currentTime + 0.05);
     source.start(scheduled);
     scheduled += buffer.duration;
-    for (const e of data.events) if (e.type === 'txFrame') frames++;
+    for (const e of data.events) {
+      if (e.type === 'txFrame') {
+        frames++;
+        sentBytes += e.bytes;
+      }
+    }
     fill();
   } else if (data.type === 'events') {
     data.events.forEach(heard);
@@ -280,6 +322,13 @@ worker.onmessage = ({ data }) => {
 /** A burst from the receiver. */
 function heard(e) {
   const at = `${e.seconds.toFixed(1)} s`;
+  if (!e.ignored && !e.otherMessage) {
+    const link = $('link');
+    link.classList.add('heard');
+    link.classList.remove('blink');
+    void link.getBoundingClientRect();   // restarts the animation
+    link.classList.add('blink');
+  }
   if (e.ignored) {
     log(`${at}  ignored a ${e.kind} burst from before this transmission`);
   } else if (e.kind === 'status') {
@@ -289,10 +338,14 @@ function heard(e) {
       const t = audio ? audio.currentTime - started : 0;
       log(`${at}  the receiver has it all: delivered in ${t.toFixed(0)} s`);
       $('heard').textContent = 'done';
+      delivered = true;
+      showProgress(1, `delivered in ${t.toFixed(0)} s`);
       stop();
       $('description').textContent = `Delivered ${message.length} bytes in ${t.toFixed(0)} s.`;
     } else {
       log(`${at}  the receiver lacks ${e.missing} block${e.missing === 1 ? '' : 's'}: sending them next`);
+      const blocks = Math.ceil(message.length / Math.max(1, Math.ceil(message.length / 64)));   // MessageCursor's
+      confirmed = Math.max(0, (blocks - e.missing) / blocks);
       $('heard').textContent = `${e.missing} missing`;
     }
   } else {
@@ -320,8 +373,13 @@ function tick() {
   $('time').textContent = `${t.toFixed(0)} s`;
   const frameSeconds = 0.752;
   const sent = Math.max(0, Math.floor((t - 1.75) / frameSeconds));
-  $('frames').textContent = layout().qam === 'adapt' ? `${frames} started` : `${sent}`;
-  $('passes').textContent = message ? `${Math.max(0, (t - 1.75 - LEAD_SECONDS) * layout().rate / 8 / message.length).toFixed(1)}` : '–';
+  $('frames').textContent = adapt ? `${frames} started` : `${sent}`;
+  const passes = Math.max(0, (t - 1.75 - LEAD_SECONDS) * rate / 8 / message.length);
+  $('passes').textContent = passes.toFixed(1);
+  // With bit loading, what the receiver last reported having, or until it reports, the bytes the frames carried; held
+  // short of full until it says done. Otherwise the first pass at the nominal rate.
+  const share = adapt ? Math.min(0.99, confirmed ?? sentBytes / message.length) : Math.min(1, passes);
+  showProgress(share, `${t.toFixed(0)} s`);
 }
 
 async function start() {
@@ -336,10 +394,16 @@ async function start() {
   } catch {
     wakeLock = null;
   }
-  const l = layout();
   worker.postMessage({ type: 'transmit', message: message.buffer.slice(0), lead: LEAD_SECONDS,
-    layout: { qam: l.qam, carrier, symbols: 8, fft: 256, subcarriers: l.subcarriers, prefix: 20, burst } });
-  if (l.qam === 'adapt') await listen();
+    layout: { qam, carrier, symbols: 8, fft: 256, subcarriers, prefix: 20, burst } });
+  if (adapt) await listen();
+  sentBytes = 0;
+  delivered = false;
+  confirmed = null;
+  $('link').toggleAttribute('hidden', !mic);
+  $('link').classList.remove('heard', 'blink');
+  $('status').hidden = false;
+  showProgress(0, '');
   started = audio.currentTime;
   scheduled = 0;
   frames = 0;
@@ -379,6 +443,7 @@ function stop() {
   audio?.close();
   wakeLock?.release();
   audio = timer = wakeLock = null;
+  if (!delivered) $('progressText').textContent = 'stopped';
   setLive(false);
 }
 
@@ -387,13 +452,12 @@ function setLive(live) {
   button.classList.toggle('live', live);
   button.title = live ? 'Stop' : 'Send';
   button.setAttribute('aria-label', button.title);
-  $('layout').disabled = $('seconds').disabled = $('file').disabled = live;
+  $('seconds').disabled = $('file').disabled = live;
 }
 
 $('toggle').onclick = () => (audio ? stop() : start());
 $('file').onchange = e => { if (e.target.files[0]) { file = e.target.files[0]; prepare(); } };
 $('change').onclick = () => { if (!audio) $('file').click(); };
-$('layout').onchange = () => { updateLink(); prepare(); };
 $('seconds').oninput = () => { $('secondsValue').textContent = `${seconds()} s`; };
 $('seconds').onchange = prepare;
 updateLink();

@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OFDM Receiver</title>
 <script>
-// Bit loading with bursts back to the transmitter (the send page, at 10 kHz; for TransmitWav --burst-listen DELL,
-// add ?burst=3200), on 100 subcarriers. Any other parameter passes through to the receiver page.
-const params = new URLSearchParams({ qam: 'adapt', subcarriers: '100' });
+// Bit loading with bursts back to the transmitter, now the receiver page's default (200 subcarriers, bursts at
+// 10 kHz; for TransmitWav --burst-listen DELL, add ?burst=3200). Kept for old links; parameters pass through.
+const params = new URLSearchParams({ qam: 'adapt' });
 for (const [key, value] of new URLSearchParams(location.search)) params.set(key, value);
 location.replace('../?' + params);
 </script>
