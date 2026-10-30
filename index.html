@@ -95,6 +95,7 @@
       <span>snr <b id="snr">–</b></span>
       <span>avg <b id="snrAvg">–</b></span>
       <span>data <b id="bytes">–</b></span>
+      <span id="mapReadout" hidden>map <b id="map">–</b></span>
       <span id="kind"></span>
     </div>
     <div class="frames" id="frameStrip" aria-label="Frames: green decoded, red failed"></div>
@@ -108,6 +109,8 @@
 <script type="module">
 // The layout must match the transmitter's. The default is two layers: QPSK on the even subcarriers, 16-QAM on the odd
 // ones (pure/ gives one constellation on 100 subcarriers). Override with e.g. ?carrier=5000 (for a mic that stops at 8 kHz).
+// ?qam=adapt (adapt/) is bit loading: the receiver proposes maps and plays each back to the transmitter as a short
+// burst of sound around ?burst= Hz (default 3200) at ?burstDb= dBFS (default -20), for TransmitWav --burst-listen.
 const params = new URLSearchParams(location.search);
 const layout = {
   qam: (params.get('qam') ?? 'qpsk+16').replace(/[ ,]/g, '+'),   // two layers as ?qam=qpsk,16 (a + in a URL reads as a space)
@@ -116,12 +119,15 @@ const layout = {
   fft: Number(params.get('fft') ?? 256),
   subcarriers: Number(params.get('subcarriers') ?? 200),
   prefix: Number(params.get('prefix') ?? 20),
+  burst: Number(params.get('burst') ?? 3200),
+  burstDb: Number(params.get('burstDb') ?? -20),
 };
+const adapt = layout.qam === 'adapt';
 const RATE = 48000;
 const MISSING = '░';
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('worker.js?v=fd07a309d6', { type: 'module' });
+const worker = new Worker('worker.js?v=2ed32098e5', { type: 'module' });
 let audio = null, stream = null, replaying = false;
 // Per layer: frames sent in two layers (?qam=qpsk+16) give a frame event for each.
 let framesOk = [0, 0], framesTotal = [0, 0], snrSum = 0;
@@ -151,7 +157,8 @@ function reset() {
   $('frameStrip1').hidden = !layout.qam.includes('+');
   $('log').textContent = '';
   $('warn').textContent = '';
-  for (const id of ['level', 'peak', 'agc', 'state', 'offset', 'time', 'frames', 'snr', 'snrAvg', 'bytes']) $(id).textContent = '–';
+  for (const id of ['level', 'peak', 'agc', 'state', 'offset', 'time', 'frames', 'snr', 'snrAvg', 'bytes', 'map']) $(id).textContent = '–';
+  $('mapReadout').hidden = !adapt;
   $('kind').textContent = '';
   $('view').className = 'view';
   $('text').replaceChildren();
@@ -192,10 +199,16 @@ function show(e) {
     }
     const box = document.createElement('span');
     box.className = e.ok ? 'ok' : 'bad';
-    box.title = `${e.seconds.toFixed(1)} s, ${names[layer] ?? 'layer ' + layer}: ${e.ok ? 'decoded' : 'failed'}` +
+    if (e.map !== undefined) $('map').textContent = e.map;
+    box.title = `${e.seconds.toFixed(1)} s, ${adapt ? 'map ' + e.map : names[layer] ?? 'layer ' + layer}: ${e.ok ? 'decoded' : 'failed'}` +
       (e.offset !== undefined ? ` (from byte ${e.offset})` : '') + `, SNR ${e.snrDb.toFixed(1)} dB`;
     $(layer === 0 ? 'frameStrip' : 'frameStrip1').append(box);
     if (e.data !== undefined) addChunk(e);
+  } else if (e.type === 'propose') {
+    log(`${e.seconds.toFixed(1)} s  proposed ${e.summary.replace(/^map \d+: /, `map ${e.id}: `)}, ${e.bitsPerSecond} bit/s`);
+  } else if (e.type === 'burst') {
+    playBurst(e.samples);
+    log(`${e.seconds.toFixed(1)} s  sent map ${e.id ?? '?'}`);
   } else if (e.type === 'missed') {
     log(`${e.seconds.toFixed(1)} s  missed a preamble`);
   } else if (e.type === 'lockLost') {
@@ -330,6 +343,21 @@ function drawByteMap() {
   ctx.globalAlpha = 1;
 }
 
+// --- Audio out: map bursts back to the transmitter, played on the capture's AudioContext while it listens.
+
+function playBurst(base64) {
+  if (!audio) return; // a replay has no transmitter to answer
+  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+  const pcm = new Int16Array(bytes.buffer);
+  const buffer = audio.createBuffer(1, pcm.length, RATE);
+  const out = buffer.getChannelData(0);
+  for (let i = 0; i < pcm.length; i++) out[i] = pcm[i] / 32768;
+  const source = audio.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audio.destination);
+  source.start();
+}
+
 // --- Audio in
 
 async function listDevices() {
@@ -349,6 +377,8 @@ async function start() {
   reset();
   setLive(true);
   try {
+    // Safari: recording and playing at once (the bursts), on the loudspeaker rather than the earpiece if it can.
+    if (adapt && navigator.audioSession) navigator.audioSession.type = 'play-and-record';
     const deviceId = $('device').value;
     stream = await navigator.mediaDevices.getUserMedia({ audio: {
       // The browser's voice processing would treat the modem signal as noise or echo.
