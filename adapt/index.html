@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OFDM Receiver</title>
 <script>
-// Bit loading with map bursts back to the transmitter (TransmitWav --map qpsk --play --burst-listen DELL),
-// on 100 subcarriers. Any other parameter passes through to the receiver page.
+// Bit loading with bursts back to the transmitter (the send page, at 10 kHz; for TransmitWav --burst-listen DELL,
+// add ?burst=3200), on 100 subcarriers. Any other parameter passes through to the receiver page.
 const params = new URLSearchParams({ qam: 'adapt', subcarriers: '100' });
 for (const [key, value] of new URLSearchParams(location.search)) params.set(key, value);
 location.replace('../?' + params);

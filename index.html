@@ -111,7 +111,8 @@
 // The layout must match the transmitter's. The default is two layers: QPSK on the even subcarriers, 16-QAM on the odd
 // ones (pure/ gives one constellation on 100 subcarriers). Override with e.g. ?carrier=5000 (for a mic that stops at 8 kHz).
 // ?qam=adapt (adapt/) is bit loading: the receiver proposes maps and plays each back to the transmitter as a short
-// burst of sound around ?burst= Hz (default 3200) at ?burstDb= dBFS (default -20), for TransmitWav --burst-listen.
+// burst of sound around ?burst= Hz (default 10000, as the send page listens) at ?burstDb= dBFS (default -20). For
+// TransmitWav --burst-listen on a mic that stops at 8 kHz (the Dell), use ?burst=3200.
 const params = new URLSearchParams(location.search);
 const layout = {
   qam: (params.get('qam') ?? 'qpsk+16').replace(/[ ,]/g, '+'),   // two layers as ?qam=qpsk,16 (a + in a URL reads as a space)
@@ -120,7 +121,7 @@ const layout = {
   fft: Number(params.get('fft') ?? 256),
   subcarriers: Number(params.get('subcarriers') ?? 200),
   prefix: Number(params.get('prefix') ?? 20),
-  burst: Number(params.get('burst') ?? 3200),
+  burst: Number(params.get('burst') ?? 10000),
   burstDb: Number(params.get('burstDb') ?? -20),
 };
 const adapt = layout.qam === 'adapt';
@@ -128,7 +129,7 @@ const RATE = 48000;
 const MISSING = '░';
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('worker.js?v=ba071bfd35', { type: 'module' });
+const worker = new Worker('worker.js?v=6ea2302c13', { type: 'module' });
 let audio = null, stream = null, replaying = false;
 // Per layer: frames sent in two layers (?qam=qpsk+16) give a frame event for each.
 let framesOk = [0, 0], framesTotal = [0, 0], snrSum = 0;
