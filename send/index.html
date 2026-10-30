@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OFDM Sender</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6b66; --faint: #9a9993; --line: #e2e1dc;
+    --ok: #2f8f5b; --bad: #c8463d; --idle: #e4e3de; --accent: #2d5fd3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151514; --panel: #1f1f1d; --ink: #ecebe6; --muted: #a3a29c; --faint: #75746f; --line: #343431;
+      --ok: #4cb27b; --bad: #e0675d; --idle: #34342f; --accent: #7aa2ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 16px 16px 40px; }
+  header { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+  h1 { font-size: 16px; font-weight: 650; margin: 0 auto 0 0; }
+  select, input[type=range] { font: inherit; font-size: 13px; color: var(--ink); }
+  select { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; max-width: 100%; }
+  .icon { width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel);
+    color: var(--ink); display: grid; place-items: center; cursor: pointer; flex: none; padding: 0; }
+  .icon svg { width: 20px; height: 20px; }
+  .icon.live { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .icon:disabled { opacity: .45; cursor: default; }
+  .icon:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #stopIcon { display: none; }
+  .icon.live #playIcon { display: none; }
+  .icon.live #stopIcon { display: block; }
+
+  .stage { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .view { aspect-ratio: 1; display: grid; place-items: center; background: var(--idle); position: relative; }
+  .view img { width: 100%; height: 100%; object-fit: contain; display: none; }
+  .view.has-image img { display: block; }
+  .view pre { display: none; margin: 0; padding: 16px; width: 100%; height: 100%; overflow-y: auto; background: var(--panel);
+    white-space: pre-wrap; overflow-wrap: anywhere; font: 15px/1.6 ui-serif, Georgia, serif; }
+  .view.has-text pre { display: block; }
+  label.pick { color: var(--muted); font-size: 14px; text-align: center; padding: 16px; cursor: pointer; }
+  label.pick b { color: var(--accent); font-weight: 600; }
+  .view.has-image label.pick, .view.has-text label.pick { display: none; }
+  input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+
+  .controls { margin-top: 12px; display: grid; gap: 8px; font-size: 13px; color: var(--muted); }
+  .controls .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .controls label { display: flex; align-items: center; gap: 8px; }
+  input[type=range] { width: 160px; accent-color: var(--accent); }
+  .readout { margin-top: 10px; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted);
+    font-variant-numeric: tabular-nums; }
+  .readout b { color: var(--ink); font-weight: 600; }
+  .readout .row { display: flex; flex-wrap: wrap; column-gap: 14px; }
+  #log { margin: 4px 0 0; color: var(--faint); white-space: pre-wrap; max-height: 5.6em; overflow-y: auto; }
+  .footer { margin-top: 6px; color: var(--faint); }
+  .footer a, .footer button { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
+  #warn { color: var(--bad); }
+  #warn:empty { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>OFDM Sender</h1>
+    <button class="icon" id="toggle" disabled title="Send" aria-label="Send">
+      <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      <svg id="stopIcon" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+    </button>
+  </header>
+
+  <input type="file" id="file" accept="image/*,text/*,*/*">
+  <section class="stage">
+    <div class="view" id="view">
+      <img id="image" alt="The image as it will be sent">
+      <pre id="text"></pre>
+      <label class="pick" id="pick" for="file">
+        <b>Choose an image</b> (or a photo, or any file) to send.<br>Images are scaled to fit the time per pass below.
+      </label>
+    </div>
+  </section>
+
+  <div class="controls">
+    <div class="row">
+      <label>Layout <select id="layout"></select></label>
+    </div>
+    <div class="row">
+      <label>Time per pass <input type="range" id="seconds" min="8" max="90" step="1" value="25"> <b id="secondsValue">25 s</b></label>
+    </div>
+  </div>
+
+  <div class="readout">
+    <div id="warn"></div>
+    <div class="row">
+      <span>sending <b id="what">–</b></span>
+      <span>size <b id="bytes">–</b></span>
+      <span>pass <b id="pass">–</b></span>
+    </div>
+    <div class="row">
+      <span>t <b id="time">–</b></span>
+      <span>frames <b id="frames">–</b></span>
+      <span>passes <b id="passes">–</b></span>
+    </div>
+    <pre id="log"></pre>
+    <div class="footer"><span id="description">Loading the transmitter…</span> ·
+      <a id="receiverLink" href="../">open the receiver with this layout</a> ·
+      <button id="change">choose another file</button></div>
+  </div>
+</main>
+
+<script type="module">
+// Sends an image (or any file) as sound, for the receiver page to decode. The layout must match the receiver's:
+// the link below the readout opens the receiver with it. Images are scaled and JPEG-encoded to fit the time per
+// pass at the layout's rate, and sent as a small thumbnail followed by the full image: browsers only make baseline
+// JPEGs, which would otherwise show only their top rows until complete. The receiver shows the thumbnail scaled up
+// until the full image has arrived. ?carrier= moves the band (5000 for a mic that stops at 8 kHz).
+const params = new URLSearchParams(location.search);
+const carrier = Number(params.get('carrier') ?? 14000);
+// Rates (information bits per second) are the layouts' at map 0; bit loading needs the backchannel to go faster.
+const LAYOUTS = [
+  { name: 'Two layers, QPSK + 16-QAM, 200 subcarriers', qam: 'qpsk+16', subcarriers: 200, rate: 3176, receiver: '../' },
+  { name: 'QPSK, 100 subcarriers', qam: 'qpsk', subcarriers: 100, rate: 1056, receiver: '../pure/' },
+  { name: 'Bit loading, 200 subcarriers (QPSK until maps come back)', qam: 'adapt', subcarriers: 200, rate: 2120,
+    receiver: '../adapt/?subcarriers=200' },
+];
+const RATE = 48000;
+const LEAD_SECONDS = 5;      // the message's start comes round about this long after the frames begin
+const MAX_BYTES = 65535;     // MessageFraming's limit
+const THUMB_SIDE = 64;
+const SIDES = [1280, 1024, 896, 768, 640, 560, 480, 400, 360, 320, 280, 240, 200, 160, 128, 96, 64];
+const QUALITIES = [0.75, 0.6, 0.5, 0.4, 0.3];
+const MIN_QUALITY = 0.4;     // a smaller image at this quality looks better than a larger one below it
+
+const $ = id => document.getElementById(id);
+const worker = new Worker('../worker.js?v=f60a4e5ef0', { type: 'module' });
+let file = null, message = null;      // the chosen file, and the bytes that will be sent
+let audio = null, timer = null, wakeLock = null, scheduled = 0, waiting = false, started = 0, frames = 0;
+
+for (const [i, l] of LAYOUTS.entries()) $('layout').append(new Option(l.name, i));
+const layout = () => LAYOUTS[Number($('layout').value)];
+const seconds = () => Number($('seconds').value);
+
+function log(line) {
+  const el = $('log');
+  el.textContent += (el.textContent ? '\n' : '') + line;
+  el.scrollTop = el.scrollHeight;
+}
+
+function updateLink() {
+  const url = new URL(layout().receiver, location.href);
+  if (carrier !== 14000) url.searchParams.set('carrier', carrier);
+  $('receiverLink').href = url.href;
+}
+
+// --- What is sent
+
+/** A JPEG of the bitmap with its longest side at most `side` pixels. */
+function jpeg(bitmap, side, quality) {
+  const scale = Math.min(1, side / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  return new Promise(done => canvas.toBlob(blob => done({ blob, width: canvas.width, height: canvas.height }), 'image/jpeg', quality));
+}
+
+/**
+ * The largest image that fits `budget` bytes at MIN_QUALITY or better, at the best quality that fits; failing
+ * that, the smallest side at whatever quality fits.
+ */
+async function fit(bitmap, budget) {
+  const longest = Math.max(bitmap.width, bitmap.height);
+  let fallback = null;
+  for (const side of SIDES.filter(s => s <= longest).concat(longest < SIDES.at(-1) ? [longest] : [])) {
+    for (const quality of QUALITIES) {
+      const j = await jpeg(bitmap, side, quality);
+      if (j.blob.size <= budget) {
+        if (quality >= MIN_QUALITY) return { ...j, quality };
+        fallback = { ...j, quality };
+        break;
+      }
+    }
+  }
+  return fallback;
+}
+
+async function prepare() {
+  if (!file) return;
+  const budget = Math.min(MAX_BYTES, Math.floor(layout().rate * seconds() / 8));
+  $('warn').textContent = '';
+  let bitmap = null;
+  if (file.type.startsWith('image/')) {
+    try {
+      bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    } catch {
+      bitmap = null;
+    }
+  }
+  if (!bitmap) {
+    // Any other file goes as it is (text shows as text on the receiver).
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (bytes.length > MAX_BYTES) {
+      $('warn').textContent = `${file.name} is ${bytes.length} bytes; at most ${MAX_BYTES} can be sent.`;
+      message = null;
+    } else {
+      message = bytes;
+      $('view').className = 'view has-text';
+      $('text').textContent = new TextDecoder().decode(bytes.subarray(0, 4000));
+      $('what').textContent = file.name;
+    }
+  } else {
+    const thumb = await jpeg(bitmap, THUMB_SIDE, 0.5);
+    const full = await fit(bitmap, budget - thumb.blob.size);
+    if (!full) {
+      $('warn').textContent = 'Even the smallest image does not fit; allow more time per pass.';
+      message = null;
+    } else {
+      const parts = [new Uint8Array(await thumb.blob.arrayBuffer()), new Uint8Array(await full.blob.arrayBuffer())];
+      message = new Uint8Array(parts[0].length + parts[1].length);
+      message.set(parts[0]);
+      message.set(parts[1], parts[0].length);
+      const img = $('image');
+      if (img.src) URL.revokeObjectURL(img.src);
+      img.src = URL.createObjectURL(full.blob);
+      $('view').className = 'view has-image';
+      $('what').textContent = `${full.width}×${full.height} JPEG q${full.quality} + ${thumb.width}×${thumb.height} thumbnail`;
+    }
+  }
+  if (message) {
+    $('bytes').textContent = `${message.length} B`;
+    $('pass').textContent = `${Math.round(message.length * 8 / layout().rate)} s at ${layout().rate} bit/s`;
+  } else {
+    $('bytes').textContent = $('pass').textContent = '–';
+  }
+  $('toggle').disabled = !message;
+}
+
+// --- Sending: the worker generates the signal in blocks, which are scheduled back to back on the AudioContext,
+// kept about half a second ahead.
+
+const BLOCK = 9600;          // 0.2 s
+const AHEAD = 0.5;
+
+worker.onmessage = ({ data }) => {
+  if (data.type === 'transmitting') {
+    $('description').textContent = data.description;
+    log(data.description);
+  } else if (data.type === 'pulled') {
+    waiting = false;
+    if (!audio) return;
+    const buffer = audio.createBuffer(1, data.samples.length, RATE);
+    buffer.copyToChannel(data.samples, 0);
+    const source = audio.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audio.destination);
+    scheduled = Math.max(scheduled, audio.currentTime + 0.05);
+    source.start(scheduled);
+    scheduled += buffer.duration;
+    for (const e of data.events) if (e.type === 'txFrame') frames++;
+    fill();
+  }
+};
+worker.onerror = e => { $('warn').textContent = 'The transmitter failed to load: ' + e.message; };
+
+function fill() {
+  if (audio && !waiting && scheduled - audio.currentTime < AHEAD) {
+    waiting = true;
+    worker.postMessage({ type: 'pull', length: BLOCK });
+  }
+}
+
+function tick() {
+  fill();
+  const t = audio.currentTime - started;
+  $('time').textContent = `${t.toFixed(0)} s`;
+  const frameSeconds = 0.752;
+  const sent = Math.max(0, Math.floor((t - 1.75) / frameSeconds));
+  $('frames').textContent = layout().qam === 'adapt' ? `${frames} started` : `${sent}`;
+  $('passes').textContent = message ? `${Math.max(0, (t - 1.75 - LEAD_SECONDS) * layout().rate / 8 / message.length).toFixed(1)}` : '–';
+}
+
+async function start() {
+  if (!message) return;
+  audio = new AudioContext({ sampleRate: RATE, latencyHint: 'playback' });
+  if (audio.sampleRate !== RATE) {
+    $('warn').textContent = `The browser runs audio at ${audio.sampleRate} Hz, not ${RATE} Hz; receivers will not lock.`;
+  }
+  await audio.resume();
+  try {
+    wakeLock = await navigator.wakeLock?.request('screen'); // a locked phone stops playing
+  } catch {
+    wakeLock = null;
+  }
+  const l = layout();
+  worker.postMessage({ type: 'transmit', message: message.buffer.slice(0), lead: LEAD_SECONDS,
+    layout: { qam: l.qam, carrier, symbols: 8, fft: 256, subcarriers: l.subcarriers, prefix: 20 } });
+  started = audio.currentTime;
+  scheduled = 0;
+  frames = 0;
+  waiting = false;
+  fill();
+  timer = setInterval(tick, 100);
+  setLive(true);
+  log(`sending ${message.length} bytes`);
+}
+
+function stop() {
+  clearInterval(timer);
+  audio?.close();
+  wakeLock?.release();
+  audio = timer = wakeLock = null;
+  setLive(false);
+}
+
+function setLive(live) {
+  const button = $('toggle');
+  button.classList.toggle('live', live);
+  button.title = live ? 'Stop' : 'Send';
+  button.setAttribute('aria-label', button.title);
+  $('layout').disabled = $('seconds').disabled = $('file').disabled = live;
+}
+
+$('toggle').onclick = () => (audio ? stop() : start());
+$('file').onchange = e => { if (e.target.files[0]) { file = e.target.files[0]; prepare(); } };
+$('change').onclick = () => { if (!audio) $('file').click(); };
+$('layout').onchange = () => { updateLink(); prepare(); };
+$('seconds').oninput = () => { $('secondsValue').textContent = `${seconds()} s`; };
+$('seconds').onchange = prepare;
+updateLink();
+$('description').textContent = 'Choose a file, then press play.';
+</script>
+</body>
+</html>

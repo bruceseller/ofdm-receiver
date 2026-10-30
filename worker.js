@@ -1,8 +1,10 @@
-// Runs the receiver (ofdm.js, compiled from the Java by TeaVM) off the page's main thread.
-// In: {type: 'configure', layout} and {type: 'samples', samples: Float32Array at 48 kHz}.
-// Out: {type: 'configured', description} and {type: 'events', events: [...]}.
-// With layout.qam 'adapt', map proposals also go back as bursts of sound (burst events, which the page plays).
-import { configure, push, backchannel } from './ofdm.js?v=2ed32098e5';
+// Runs the receiver and the transmitter (ofdm.js, compiled from the Java by TeaVM) off the page's main thread.
+// Receiving, in: {type: 'configure', layout} and {type: 'samples', samples: Float32Array at 48 kHz}.
+//   Out: {type: 'configured', description} and {type: 'events', events: [...]}.
+//   With layout.qam 'adapt', map proposals also go back as bursts of sound (burst events, which the page plays).
+// Sending (send/), in: {type: 'transmit', layout, message: ArrayBuffer, lead: seconds} and {type: 'pull', length}.
+//   Out: {type: 'transmitting', description} and {type: 'pulled', samples: Float32Array, events: [...]}.
+import { configure, push, backchannel, transmit, transmitPull } from './ofdm.js?v=f60a4e5ef0';
 
 onmessage = ({ data }) => {
   if (data.type === 'configure') {
@@ -10,6 +12,15 @@ onmessage = ({ data }) => {
     let description = configure(l.qam, l.carrier, l.symbols, l.fft, l.subcarriers, l.prefix);
     if (l.qam === 'adapt') description += '; ' + backchannel(l.burst, l.burstDb);
     postMessage({ type: 'configured', description });
+  } else if (data.type === 'transmit') {
+    const l = data.layout;
+    const description = transmit(l.qam, l.carrier, l.symbols, l.fft, l.subcarriers, l.prefix,
+      new Int8Array(data.message), data.lead);
+    postMessage({ type: 'transmitting', description });
+  } else if (data.type === 'pull') {
+    const samples = new Float32Array(data.length);
+    const events = JSON.parse(transmitPull(samples));
+    postMessage({ type: 'pulled', samples, events }, [samples.buffer]);
   } else if (data.type === 'samples') {
     const events = JSON.parse(push(data.samples));
     if (events.length > 0 || data.last) {

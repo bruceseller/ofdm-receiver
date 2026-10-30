@@ -54,7 +54,7 @@
   .frames span.ok { background: var(--ok); } .frames span.bad { background: var(--bad); }
   #log { margin: 4px 0 0; color: var(--faint); white-space: pre-wrap; max-height: 5.6em; overflow-y: auto; }
   .footer { margin-top: 6px; color: var(--faint); }
-  .footer button { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
+  .footer a, .footer button { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
   #warn { color: var(--bad); }
   #warn:empty { display: none; }
 </style>
@@ -102,7 +102,8 @@
     <div class="frames" id="frameStrip1" aria-label="Second layer's frames: green decoded, red failed" hidden></div>
     <pre id="log"></pre>
     <div class="footer"><span id="layout">Loading the receiver…</span> ·
-      <button id="replay">replay a WAV</button><input type="file" id="file" accept="audio/*,.wav" hidden></div>
+      <button id="replay">replay a WAV</button><input type="file" id="file" accept="audio/*,.wav" hidden> ·
+      <a id="sendLink" href="send/">send</a></div>
   </div>
 </main>
 
@@ -127,7 +128,7 @@ const RATE = 48000;
 const MISSING = '░';
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('worker.js?v=2ed32098e5', { type: 'module' });
+const worker = new Worker('worker.js?v=f60a4e5ef0', { type: 'module' });
 let audio = null, stream = null, replaying = false;
 // Per layer: frames sent in two layers (?qam=qpsk+16) give a frame event for each.
 let framesOk = [0, 0], framesTotal = [0, 0], snrSum = 0;
@@ -258,12 +259,47 @@ function lastScanBoundary(bytes, end) {
   return cut;
 }
 
+// Where the full image starts in a message from the send page: a thumbnail JPEG followed by the full one. The
+// thumbnail's end-of-image marker (FF D9, which entropy-coded data never contains) followed at once by a start of
+// image (FF D8); -1 if that part has not all arrived or the message is a single image.
+function thumbnailEnd(bytes, have) {
+  for (let i = 2; i + 3 < bytes.length && have[i] && have[i + 1]; i++) {
+    if (bytes[i] === 0xFF && bytes[i + 1] === 0xD9) {
+      return have[i + 2] && have[i + 3] && bytes[i + 2] === 0xFF && bytes[i + 3] === 0xD8 ? i + 2 : -1;
+    }
+  }
+  return -1;
+}
+
+// A thumbnail and an image (send/): the thumbnail, scaled up, until the whole image has arrived.
+function renderPair(m, split) {
+  const complete = m.have.indexOf(0, split) < 0;
+  const showing = complete ? 'full' : 'thumbnail';
+  if (m.shown === showing) return;
+  m.shown = showing;
+  const img = $('image');
+  const old = img.src;
+  img.onload = () => {
+    if (old) URL.revokeObjectURL(old);
+    $('view').className = 'view has-image';
+    $('kind').textContent = complete ? `jpeg ${img.naturalWidth}×${img.naturalHeight}` : `thumbnail ${img.naturalWidth}×${img.naturalHeight}; image to come`;
+  };
+  img.src = URL.createObjectURL(new Blob([complete ? m.bytes.subarray(split) : m.bytes.subarray(0, split)], { type: 'image/jpeg' }));
+}
+
 function render() {
   const m = message;
   const kind = kindOf(m.bytes, m.have);
   if (!kind) {
     $('kind').textContent = 'waiting for the start of the file';
     return;
+  }
+  if (kind === 'image/jpeg') {
+    const split = thumbnailEnd(m.bytes, m.have);
+    if (split > 0) {
+      renderPair(m, split);
+      return;
+    }
   }
   if (kind === 'text') {
     $('view').className = 'view has-text';
@@ -441,6 +477,7 @@ $('device').onchange = () => { if (stream) { stop(); start(); } };
 $('replay').onclick = () => $('file').click();
 $('file').onchange = e => { if (e.target.files[0]) replay(e.target.files[0]); e.target.value = ''; };
 addEventListener('resize', drawByteMap);
+if (layout.carrier !== 14000) $('sendLink').href = `send/?carrier=${layout.carrier}`;
 reset();
 </script>
 </body>
