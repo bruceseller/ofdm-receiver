@@ -154,7 +154,7 @@ const MISSING = '░';
 const RATE_WINDOW = 4;   // seconds of frames the rate beside the bars is taken over
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('worker.js?v=2d32ad5e93', { type: 'module' });
+const worker = new Worker('worker.js?v=8942419882', { type: 'module' });
 let audio = null, stream = null, replaying = false;
 // Per layer: frames sent in two layers (?qam=qpsk+16) give a frame event for each.
 let framesOk = [0, 0], framesTotal = [0, 0], snrSum = 0;

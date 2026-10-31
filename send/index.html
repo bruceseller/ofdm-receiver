@@ -43,9 +43,6 @@
   .view.has-image label.pick, .view.has-text label.pick { display: none; }
   input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
 
-  .controls { margin-top: 12px; display: grid; gap: 8px; font-size: 13px; color: var(--muted); }
-  .controls .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .controls label { display: flex; align-items: center; gap: 8px; }
   input[type=range] { width: 160px; accent-color: var(--accent); }
   .status { display: flex; align-items: center; gap: 8px; flex: none; white-space: nowrap;
     font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -102,16 +99,10 @@
       <img id="image" alt="The image as it will be sent">
       <pre id="text"></pre>
       <label class="pick" id="pick" for="file">
-        <b>Choose an image</b> (or a photo, or any file) to send.<br>Images are scaled to fit the time per pass below.
+        <b>Choose an image</b> (or a photo, or any file) to send.<br>Images are scaled to send in about 25 s.
       </label>
     </div>
   </section>
-
-  <div class="controls">
-    <div class="row">
-      <label>Time per pass <input type="range" id="seconds" min="8" max="90" step="1" value="25"> <b id="secondsValue">25 s</b></label>
-    </div>
-  </div>
 
   <div id="warn"></div>
 
@@ -121,7 +112,7 @@
     <div class="row">
       <span>sending <b id="what">–</b></span>
       <span>size <b id="bytes">–</b></span>
-      <span>pass <b id="pass">–</b></span>
+      <span>at <b id="pass">–</b></span>
     </div>
     <div class="row">
       <span>t <b id="time">–</b></span>
@@ -161,15 +152,20 @@ const adapt = qam === 'adapt';
 // takes the link well above map 0's 2120 bit/s.
 const rate = Number(params.get('rate') ?? (adapt ? 5000 : 2120));
 const RATE = 48000;
-const LEAD_SECONDS = 5;      // the message's start comes round about this long after the frames begin
+// Without a backchannel the message loops, its start coming round about LEAD_SECONDS after the frames begin (so a
+// receiver has locked by then). With one, start frames go out until the receiver answers, and the message then starts.
+const LEAD_SECONDS = 5;
+const TARGET_SECONDS = 25;   // images are sized to take about this long at the rate (as the page's text says)
 const MAX_BYTES = 65535;     // MessageFraming's limit
 const THUMB_SIDE = 64;
 const SIDES = [1280, 1024, 896, 768, 640, 560, 480, 400, 360, 320, 280, 240, 200, 160, 128, 96, 64];
-const QUALITIES = [0.75, 0.6, 0.5, 0.4, 0.3];
-const MIN_QUALITY = 0.4;     // a smaller image at this quality looks better than a larger one below it
+const QUALITIES = [0.85, 0.75, 0.65, 0.5, 0.4, 0.3];
+// A smaller image at this quality looks better than a larger one below it: browsers' encoders show 8x8 blocks
+// clearly at 0.4-0.5 (the old floor), and the page shows the image larger than it is.
+const MIN_QUALITY = 0.65;
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('../worker.js?v=2d32ad5e93', { type: 'module' });
+const worker = new Worker('../worker.js?v=8942419882', { type: 'module' });
 let file = null, message = null;      // the chosen file, and the bytes that will be sent
 let audio = null, timer = null, wakeLock = null, scheduled = 0, waiting = false, started = 0, frames = 0;
 let mic = null, micPeak = 0, sentBytes = 0, delivered = false;
@@ -177,7 +173,8 @@ let analyser = null, floorDb = -Infinity;   // the mic's spectrum, and its level
 let confirmed = null;    // the bytes the receiver last acknowledged having in order, or null
 let sentAtAck = 0;       // sentBytes then
 
-const seconds = () => Number($('seconds').value);
+let sending = false;     // the worker has the transmission (the mic's samples go to it only then)
+let answered = false;    // the receiver has answered the start frames
 
 function log(line) {
   const el = $('log');
@@ -208,12 +205,41 @@ function showProgress(share, text) {
 
 /** A JPEG of the bitmap with its longest side at most `side` pixels. */
 function jpeg(bitmap, side, quality) {
-  const scale = Math.min(1, side / Math.max(bitmap.width, bitmap.height));
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-  canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  const canvas = scaled(bitmap, side);
   return new Promise(done => canvas.toBlob(blob => done({ blob, width: canvas.width, height: canvas.height }), 'image/jpeg', quality));
+}
+
+const scalings = new WeakMap();   // per bitmap, its scaled canvases by side
+
+/**
+ * The bitmap with its longest side at most `side` pixels. Halved a step at a time with high-quality smoothing, then
+ * drawn to size: a browser's single drawImage from a photo's 4000 pixels to a few hundred samples it sparsely, and
+ * the aliasing comes out of the JPEG encoder as blocks.
+ */
+function scaled(bitmap, side) {
+  if (!scalings.has(bitmap)) scalings.set(bitmap, new Map());
+  const cache = scalings.get(bitmap);
+  if (cache.has(side)) return cache.get(side);
+  const scale = Math.min(1, side / Math.max(bitmap.width, bitmap.height));
+  const width = Math.max(1, Math.round(bitmap.width * scale)), height = Math.max(1, Math.round(bitmap.height * scale));
+  let source = bitmap, w = bitmap.width, h = bitmap.height;
+  for (;;) {
+    const last = w / 2 < width * 1.5;   // halve while that stays well above the size wanted
+    const nw = last ? width : Math.round(w / 2), nh = last ? height : Math.round(h / 2);
+    const canvas = document.createElement('canvas');
+    canvas.width = nw;
+    canvas.height = nh;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(source, 0, 0, nw, nh);
+    source = canvas;
+    w = nw;
+    h = nh;
+    if (last) break;
+  }
+  cache.set(side, source);
+  return source;
 }
 
 /**
@@ -239,7 +265,7 @@ async function fit(bitmap, budget) {
 async function prepare() {
   if (!file) return;
   $('status').hidden = true;
-  const budget = Math.min(MAX_BYTES, Math.floor(rate * seconds() / 8));
+  const budget = Math.min(MAX_BYTES, Math.floor(rate * TARGET_SECONDS / 8));
   $('warn').textContent = '';
   let bitmap = null;
   if (file.type.startsWith('image/')) {
@@ -265,7 +291,7 @@ async function prepare() {
     const thumb = await jpeg(bitmap, THUMB_SIDE, 0.5);
     const full = await fit(bitmap, budget - thumb.blob.size);
     if (!full) {
-      $('warn').textContent = 'Even the smallest image does not fit; allow more time per pass.';
+      $('warn').textContent = 'Even the smallest image does not fit.';
       message = null;
     } else {
       const parts = [new Uint8Array(await thumb.blob.arrayBuffer()), new Uint8Array(await full.blob.arrayBuffer())];
@@ -281,7 +307,7 @@ async function prepare() {
   }
   if (message) {
     $('bytes').textContent = `${message.length} B`;
-    $('pass').textContent = `${Math.round(message.length * 8 / rate)} s at ${rate} bit/s`;
+    $('pass').textContent = `${rate} bit/s: about ${Math.round(message.length * 8 / rate)} s`;
   } else {
     $('bytes').textContent = $('pass').textContent = '–';
   }
@@ -334,6 +360,10 @@ function heard(e) {
   if (e.ignored) {
     log(`${at}  ignored a ${e.kind} burst from before this transmission`);
   } else if (e.kind === 'ack') {
+    if (e.started) {
+      answered = true;
+      log(`${at}  the receiver answered: sending from byte ${e.received}`);
+    }
     if (e.otherMessage) {
       log(`${at}  heard an acknowledgement of another message`);
     } else if (e.done) {
@@ -380,13 +410,13 @@ function tick() {
   const sent = Math.max(0, Math.floor((t - 1.75) / frameSeconds));
   $('frames').textContent = adapt ? `${frames} started` : `${sent}`;
   const passes = Math.max(0, (t - 1.75 - LEAD_SECONDS) * rate / 8 / message.length);
-  $('passes').textContent = passes.toFixed(1);
+  $('passes').textContent = mic ? '–' : passes.toFixed(1);
   // With bit loading, what the receiver last acknowledged and the bytes sent since (acknowledgements come only when
   // there is a gap), or until it acknowledges, the bytes the frames carried; held short of full until it says done.
   // Otherwise the first pass at the nominal rate.
   const carried = confirmed === null ? sentBytes : confirmed + sentBytes - sentAtAck;
   const share = adapt ? Math.min(0.99, carried / message.length) : Math.min(1, passes);
-  showProgress(share, `${t.toFixed(0)} s`);
+  showProgress(share, mic && !answered ? 'waiting for the receiver' : `${t.toFixed(0)} s`);
 }
 
 async function start() {
@@ -403,9 +433,12 @@ async function start() {
   } catch {
     wakeLock = null;
   }
-  worker.postMessage({ type: 'transmit', message: message.buffer.slice(0), lead: LEAD_SECONDS,
-    layout: { qam, carrier, symbols: 8, fft: 256, subcarriers, prefix: 20, burst } });
+  // The mic first: only with it does the transmitter hold the message until the receiver answers.
+  answered = false;
   if (adapt) await listen();
+  worker.postMessage({ type: 'transmit', message: message.buffer.slice(0), lead: mic ? 0 : LEAD_SECONDS,
+    layout: { qam, carrier, symbols: 8, fft: 256, subcarriers, prefix: 20, burst: mic ? burst : 0 } });
+  sending = true;
   sentBytes = 0;
   delivered = false;
   confirmed = null;
@@ -434,7 +467,7 @@ async function listen() {
     const capture = new AudioWorkletNode(audio, 'capture', { numberOfOutputs: 1 });
     capture.port.onmessage = ({ data }) => {
       for (let i = 0; i < data.length; i++) micPeak = Math.max(micPeak, Math.abs(data[i]));
-      worker.postMessage({ type: 'heard', samples: data }, [data.buffer]);
+      if (sending) worker.postMessage({ type: 'heard', samples: data }, [data.buffer]);
     };
     const mute = audio.createGain();
     mute.gain.value = 0;
@@ -494,6 +527,7 @@ function checkHeard(t, margin) {
 }
 
 function stop() {
+  sending = false;
   mic?.getTracks().forEach(t => t.stop());
   mic = analyser = null;
   if ($('warn').textContent === MUTED_WARNING) $('warn').textContent = '';
@@ -510,14 +544,12 @@ function setLive(live) {
   button.classList.toggle('live', live);
   button.title = live ? 'Stop' : 'Send';
   button.setAttribute('aria-label', button.title);
-  $('seconds').disabled = $('file').disabled = live;
+  $('file').disabled = live;
 }
 
 $('toggle').onclick = () => (audio ? stop() : start());
 $('file').onchange = e => { if (e.target.files[0]) { file = e.target.files[0]; prepare(); } };
 $('change').onclick = () => { if (!audio) $('file').click(); };
-$('seconds').oninput = () => { $('secondsValue').textContent = `${seconds()} s`; };
-$('seconds').onchange = prepare;
 updateLink();
 $('description').textContent = 'Choose a file, then press play.';
 </script>
