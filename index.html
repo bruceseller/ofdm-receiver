@@ -151,7 +151,9 @@ const layout = {
 const adapt = layout.qam === 'adapt';
 const RATE = 48000;
 const MISSING = '░';
-const RATE_WINDOW = 4;   // seconds of frames the rate beside the bars is taken over
+const RATE_WINDOW = 4;   // seconds without a good frame before the bars turn to dots
+const RATE_FRAMES = 5;   // the rate beside the bars: new message bytes in the last this many frames, over their time
+const FRAME_SECONDS = (4 + layout.symbols) * (layout.fft + Math.round(layout.prefix / 1000 * 6000)) / 6000;
 
 const $ = id => document.getElementById(id);
 const worker = new Worker('worker.js?v=8942419882', { type: 'module' });
@@ -159,7 +161,7 @@ let audio = null, stream = null, replaying = false;
 // Per layer: frames sent in two layers (?qam=qpsk+16) give a frame event for each.
 let framesOk = [0, 0], framesTotal = [0, 0], snrSum = 0;
 let message = null;   // {total, bytes, have, received, shown}
-let decoded = [];     // {seconds, bits} of recent frames, for the rate
+let decoded = [];     // {seconds, ok, bits} of recent frames: bits of the message new in each, for the rate
 let tiers = null;     // subcarriers [off, QPSK, 16-QAM, 64-QAM] in the last frame, for the bars
 
 worker.onmessage = ({ data }) => {
@@ -229,9 +231,9 @@ function show(e) {
     }
     if (e.map !== undefined) $('map').textContent = e.map;
     tiers = e.tiers ?? fixedTiers();
-    decoded.push({ seconds: e.seconds, bits: e.data !== undefined ? atob(e.data).length * 8 : 0 });
+    const fresh = e.data !== undefined ? addChunk(e) : 0;
+    decoded.push({ seconds: e.seconds, ok: e.ok, bits: 8 * fresh });
     showRate(e.seconds);
-    if (e.data !== undefined) addChunk(e);
   } else if (e.type === 'propose') {
     log(`${e.seconds.toFixed(1)} s  proposed ${e.summary.replace(/^map \d+: /, `map ${e.id}: `)}, ${e.bitsPerSecond} bit/s`);
   } else if (e.type === 'burst') {
@@ -250,21 +252,25 @@ function show(e) {
 // --- The message: chunks arrive in any order (and repeat while the transmitter loops), so they are
 // placed by offset and the content is redrawn from what has arrived.
 
+/** Adds a frame's chunk; returns how many of its bytes were new. */
 function addChunk(e) {
   if (!message || message.total !== e.total) {
     message = { total: e.total, bytes: new Uint8Array(e.total), have: new Uint8Array(e.total), received: 0, shown: -1 };
   }
   const data = Uint8Array.from(atob(e.data), c => c.charCodeAt(0));
+  let fresh = 0;
   for (let i = 0; i < data.length; i++) {
     if (!message.have[e.offset + i]) {
       message.have[e.offset + i] = 1;
       message.received++;
+      fresh++;
     }
     message.bytes[e.offset + i] = data[i];
   }
   $('bytes').textContent = `${message.received}/${message.total} B (${Math.round(100 * message.received / message.total)}%)`;
   showProgress();
   render();
+  return fresh;
 }
 
 function kindOf(b, have) {
@@ -402,14 +408,19 @@ function fixedTiers() {
 
 /**
  * The bars: BARS shared among the last frame's tiers in proportion to their subcarriers (largest remainder), each as
- * tall as its tier, rising left to right; grey stubs before any frame, dots while listening with nothing decoded in
- * the last RATE_WINDOW seconds. Beside them, the message bits decoded in that time.
+ * tall as its tier, rising left to right; grey stubs before any frame, dots while listening with no good frame in
+ * the last RATE_WINDOW seconds. Beside them, the rate the message is actually arriving at: its new bytes in the last
+ * RATE_FRAMES frames (not those already had, as after the transmitter goes back, nor start frames, which carry
+ * none), over the time those frames took. Two layers' frames arrive together and count as one frame's time.
  */
 function showRate(now = rateNow) {
   rateNow = now;
-  decoded = decoded.filter(d => d.seconds > now - RATE_WINDOW);
-  const rate = decoded.reduce((sum, d) => sum + d.bits, 0) / RATE_WINDOW;
-  const counts = rate > 0 && tiers ? tiers : [1, 0, 0, 0];
+  decoded = decoded.filter(d => d.seconds > now - RATE_WINDOW - RATE_FRAMES * FRAME_SECONDS);
+  const live = decoded.some(d => d.ok && d.seconds > now - RATE_WINDOW);
+  const times = [...new Set(decoded.map(d => d.seconds))].slice(-RATE_FRAMES);
+  const bits = decoded.filter(d => times.includes(d.seconds)).reduce((sum, d) => sum + d.bits, 0);
+  const rate = live && times.length ? bits / (times.length * FRAME_SECONDS) : 0;
+  const counts = live && tiers ? tiers : [1, 0, 0, 0];
   const total = counts.reduce((a, b) => a + b, 0);
   const share = counts.map(c => BARS * c / total);
   const bars = share.map(Math.floor);
@@ -425,12 +436,12 @@ function showRate(now = rateNow) {
     bar.setAttribute('class', order[i] === 0 ? 'off' : '');
   });
   const names = ['off', 'QPSK', '16-QAM', '64-QAM'];
-  $('signal').title = rate > 0 && tiers
+  $('signal').title = live && tiers
     ? 'Subcarriers: ' + [3, 2, 1, 0].filter(t => tiers[t]).map(t => `${names[t]} ${tiers[t]}`).join(' · ')
     : 'Subcarriers by modulation: the taller the bar, the more bits (QPSK, 16-QAM, 64-QAM)';
-  const offline = rate === 0 && (stream !== null || replaying);
+  const offline = !live && (stream !== null || replaying);
   $('signal').classList.toggle('offline', offline);
-  $('rate').textContent = rate > 0 ? `${(rate / 1000).toFixed(1)} kbit/s` : '';
+  $('rate').textContent = live ? `${(rate / 1000).toFixed(1)} kbit/s` : '';
 }
 
 const RING = 2 * Math.PI * 22;

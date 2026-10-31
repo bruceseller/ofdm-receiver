@@ -117,7 +117,7 @@
       <img id="image" alt="The image as it will be sent">
       <pre id="text"></pre>
       <label class="pick" id="pick" for="file">
-        <b>Choose an image</b> (or a photo, or any file) to send.<br>Images are scaled to send in about 25 s.
+        <b>Choose a file to send</b><br>A picture is scaled to send in about 25 s; anything else goes as it is.
       </label>
     </div>
   </section>
@@ -435,7 +435,7 @@ function tick() {
   // Otherwise the first pass at the nominal rate.
   const carried = confirmed === null ? sentBytes : confirmed + sentBytes - sentAtAck;
   const share = adapt ? Math.min(0.99, carried / message.length) : Math.min(1, passes);
-  showProgress(share, mic && !answered ? 'waiting for the receiver' : `${t.toFixed(0)} s`);
+  showProgress(share, mic && !answered ? '' : `${t.toFixed(0)} s`);   // waiting: the dashed ring says it
 }
 
 async function start() {
