@@ -43,21 +43,24 @@
   .view.has-image label.pick, .view.has-text label.pick { display: none; }
   input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
 
-  input[type=range] { width: 160px; accent-color: var(--accent); }
   .status { display: flex; align-items: center; gap: 8px; flex: none; white-space: nowrap;
     font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .status[hidden] { display: none; }
-  .ring { width: 44px; height: 44px; flex: none; }
-  /* The return path: hollow while listening with nothing heard from the receiver, solid once a burst has been, and a
-     blink on each burst. */
-  #link { width: 12px; height: 12px; flex: none; overflow: visible; }
-  #link[hidden] { display: none; }
-  #link circle { fill: none; stroke: var(--accent); stroke-width: 1.5; }
-  #link.heard circle { fill: var(--accent); }
-  #link.blink circle { animation: blink .6s ease-out; transform-origin: center; transform-box: fill-box; }
-  @keyframes blink { 0% { transform: scale(1.8); opacity: .4; } 100% { transform: scale(1); opacity: 1; } }
+  .ring { width: 44px; height: 44px; flex: none; overflow: visible; }
   .ring circle { fill: none; stroke-width: 4; }
   .ring .track { stroke: var(--idle); }
+  /* The return path, on the ring. Waiting for the receiver's first answer: the track dashed, lighter, turning slowly
+     (16 dashes, so the seam does not show). Then solid, and each burst heard sends a ping out from the ring. */
+  .ring.waiting .track { stroke: var(--faint); stroke-dasharray: 4.32 4.32; transform-origin: center; transform-box: fill-box;
+    animation: searching 8s linear infinite; }
+  @keyframes searching { to { transform: rotate(360deg); } }
+  .ring .ping { stroke: var(--accent); stroke-width: 3; opacity: 0; transform-origin: center; transform-box: fill-box; }
+  .ring.pinging .ping { animation: ping .8s ease-out; }
+  @keyframes ping { 0% { transform: scale(1); opacity: .8; } 100% { transform: scale(1.4); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .ring.waiting .track { animation: none; }
+    .ring.pinging .ping { animation-duration: .01s; }
+  }
   .ring .done { stroke: var(--accent); stroke-linecap: round; transition: stroke-dashoffset .3s; }
   .ring text { fill: var(--ink); font-size: 13px; font-weight: 600; text-anchor: middle; dominant-baseline: central; }
   details.fold { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 8px; }
@@ -85,8 +88,8 @@
     <h1>OFDM Sender</h1>
     <div class="status" id="status" hidden>
       <span id="progressText"></span>
-      <svg id="link" viewBox="0 0 12 12" role="img" aria-label="Heard from the receiver" hidden><circle cx="6" cy="6" r="4.5"/></svg>
-      <svg class="ring" viewBox="0 0 52 52" role="img" aria-label="Message sent">
+      <svg class="ring" id="ring" viewBox="0 0 52 52" role="img" aria-label="Message sent; dashed until the receiver answers">
+        <circle class="ping" cx="26" cy="26" r="22"/>
         <circle class="track" cx="26" cy="26" r="22"/>
         <circle class="done" id="ringArc" cx="26" cy="26" r="22" transform="rotate(-90 26 26)"/>
         <text id="ringText" x="26" y="26">0%</text></svg>
@@ -190,6 +193,14 @@ function updateLink() {
 }
 
 const RING = 2 * Math.PI * 22;
+
+/** A ping out from the ring: a burst heard from the receiver. */
+function ping() {
+  const ring = $('ring');
+  ring.classList.remove('pinging');
+  void ring.getBoundingClientRect();   // restarts the animation
+  ring.classList.add('pinging');
+}
 
 /** The ring: the share of the message sent, held short of full until the receiver says it has it all. */
 function showProgress(share, text) {
@@ -350,18 +361,13 @@ worker.onmessage = ({ data }) => {
 /** A burst from the receiver. */
 function heard(e) {
   const at = `${e.seconds.toFixed(1)} s`;
-  if (!e.ignored && !e.otherMessage) {
-    const link = $('link');
-    link.classList.add('heard');
-    link.classList.remove('blink');
-    void link.getBoundingClientRect();   // restarts the animation
-    link.classList.add('blink');
-  }
+  if (!e.ignored && !e.otherMessage) ping();
   if (e.ignored) {
     log(`${at}  ignored a ${e.kind} burst from before this transmission`);
   } else if (e.kind === 'ack') {
     if (e.started) {
       answered = true;
+      $('ring').classList.remove('waiting');
       log(`${at}  the receiver answered: sending from byte ${e.received}`);
     }
     if (e.otherMessage) {
@@ -443,8 +449,8 @@ async function start() {
   delivered = false;
   confirmed = null;
   sentAtAck = 0;
-  $('link').toggleAttribute('hidden', !mic);
-  $('link').classList.remove('heard', 'blink');
+  $('ring').classList.toggle('waiting', !!mic);   // until the receiver answers
+  $('ring').classList.remove('pinging');
   $('status').hidden = false;
   showProgress(0, '');
   started = audio.currentTime;
