@@ -169,10 +169,11 @@ const QUALITIES = [0.75, 0.6, 0.5, 0.4, 0.3];
 const MIN_QUALITY = 0.4;     // a smaller image at this quality looks better than a larger one below it
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('../worker.js?v=05863759e8', { type: 'module' });
+const worker = new Worker('../worker.js?v=15b4842b80', { type: 'module' });
 let file = null, message = null;      // the chosen file, and the bytes that will be sent
 let audio = null, timer = null, wakeLock = null, scheduled = 0, waiting = false, started = 0, frames = 0;
 let mic = null, micPeak = 0, sentBytes = 0, delivered = false;
+let analyser = null, floorDb = -Infinity;   // the mic's spectrum, and its level in the signal's band before playing
 let confirmed = null;    // the share of the message the receiver last reported having, or null
 
 const seconds = () => Number($('seconds').value);
@@ -370,6 +371,7 @@ function tick() {
     micPeak = 0;
   }
   const t = audio.currentTime - started;
+  checkHeard(t);
   $('time').textContent = `${t.toFixed(0)} s`;
   const frameSeconds = 0.752;
   const sent = Math.max(0, Math.floor((t - 1.75) / frameSeconds));
@@ -389,6 +391,8 @@ async function start() {
     $('warn').textContent = `The browser runs audio at ${audio.sampleRate} Hz, not ${RATE} Hz; receivers will not lock.`;
   }
   await audio.resume();
+  // Without the mic, playback alone: iOS then plays even with the silent switch on (play-and-record does too).
+  if (!adapt && navigator.audioSession) navigator.audioSession.type = 'playback';
   try {
     wakeLock = await navigator.wakeLock?.request('screen'); // a locked phone stops playing
   } catch {
@@ -428,7 +432,18 @@ async function listen() {
     };
     const mute = audio.createGain();
     mute.gain.value = 0;
-    audio.createMediaStreamSource(mic).connect(capture).connect(mute).connect(audio.destination);
+    const source = audio.createMediaStreamSource(mic);
+    source.connect(capture).connect(mute).connect(audio.destination);
+    analyser = audio.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.5;
+    source.connect(analyser).connect(mute);
+    // The band's level before anything plays, the highest of a few looks (the mic may start with zeros).
+    floorDb = -Infinity;
+    for (let i = 0; i < 4; i++) {
+      await new Promise(done => setTimeout(done, 100));
+      floorDb = Math.max(floorDb, bandDb());
+    }
     log(`listening on ${mic.getAudioTracks()[0].label || 'the microphone'} for bursts around ${burst} Hz`);
   } catch (err) {
     mic = null;
@@ -436,9 +451,40 @@ async function listen() {
   }
 }
 
+// --- Muted? A page cannot read the volume or the silent switch, but with the mic open (bit loading) it can tell
+// whether the phone hears its own signal: playing, the band should stand well above where it was before.
+
+const HEARD_MARGIN_DB = 10;
+const CHECK_AFTER = 2.5;     // seconds into the transmission: after the lead-in and into the warm-up noise
+const MUTED_WARNING = 'The microphone does not hear this phone\'s own signal: is the volume up, and the phone not on silent?';
+
+/** The mic's power in the signal's band (dB, relative). */
+function bandDb() {
+  const bins = new Float32Array(analyser.frequencyBinCount);
+  analyser.getFloatFrequencyData(bins);
+  const hz = RATE / analyser.fftSize;
+  const half = subcarriers * 6000 / 256 / 2;
+  let power = 0;
+  for (let k = Math.ceil((carrier - half) / hz); k <= Math.floor((carrier + half) / hz); k++) power += 10 ** (bins[k] / 10);
+  return 10 * Math.log10(power);
+}
+
+function checkHeard(t) {
+  if (!analyser || t < CHECK_AFTER || !isFinite(floorDb)) return;
+  const muted = bandDb() < floorDb + HEARD_MARGIN_DB;
+  if (muted && !$('warn').textContent) {
+    $('warn').textContent = MUTED_WARNING;
+    log(`${t.toFixed(1)} s  the mic does not hear the signal (band ${(bandDb() - floorDb).toFixed(0)} dB over its level before)`);
+  } else if (!muted && $('warn').textContent === MUTED_WARNING) {
+    $('warn').textContent = '';
+    log(`${t.toFixed(1)} s  the mic hears the signal again`);
+  }
+}
+
 function stop() {
   mic?.getTracks().forEach(t => t.stop());
-  mic = null;
+  mic = analyser = null;
+  if ($('warn').textContent === MUTED_WARNING) $('warn').textContent = '';
   clearInterval(timer);
   audio?.close();
   wakeLock?.release();
