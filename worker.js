@@ -6,7 +6,7 @@
 //   Out: {type: 'transmitting', description} and {type: 'pulled', samples: Float32Array, events: [...]}.
 //   With layout.qam 'adapt' and layout.burst (Hz), it also listens for the receiver's bursts:
 //   in {type: 'heard', samples: Float32Array} from the microphone, out {type: 'events', events: [...]}.
-import { configure, push, backchannel, transmit, transmitPull, transmitListen, transmitHeard } from './ofdm.js?v=15b4842b80';
+import { configure, push, backchannel, transmit, transmitPull, transmitListen, transmitHeard } from './ofdm.js?v=2d32ad5e93';
 
 onmessage = ({ data }) => {
   if (data.type === 'configure') {

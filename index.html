@@ -154,7 +154,7 @@ const MISSING = '░';
 const RATE_WINDOW = 4;   // seconds of frames the rate beside the bars is taken over
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('worker.js?v=15b4842b80', { type: 'module' });
+const worker = new Worker('worker.js?v=2d32ad5e93', { type: 'module' });
 let audio = null, stream = null, replaying = false;
 // Per layer: frames sent in two layers (?qam=qpsk+16) give a frame event for each.
 let framesOk = [0, 0], framesTotal = [0, 0], snrSum = 0;
@@ -236,10 +236,10 @@ function show(e) {
     log(`${e.seconds.toFixed(1)} s  proposed ${e.summary.replace(/^map \d+: /, `map ${e.id}: `)}, ${e.bitsPerSecond} bit/s`);
   } else if (e.type === 'burst') {
     playBurst(e.samples);
-    if (e.kind !== 'status') log(`${e.seconds.toFixed(1)} s  sent map ${e.id ?? '?'}`);
-  } else if (e.type === 'report') {
+    if (e.kind !== 'ack') log(`${e.seconds.toFixed(1)} s  sent map ${e.id ?? '?'}`);
+  } else if (e.type === 'ack') {
     log(`${e.seconds.toFixed(1)} s  ` + (e.done ? 'complete: told the sender it can stop'
-      : `asked the sender for the ${e.missing} missing block${e.missing === 1 ? '' : 's'}`));
+      : `told the sender it has ${e.received} of ${e.length} bytes in order`));
   } else if (e.type === 'missed') {
     log(`${e.seconds.toFixed(1)} s  missed a preamble`);
   } else if (e.type === 'lockLost') {

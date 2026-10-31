@@ -149,7 +149,7 @@
 // until the full image has arrived. ?carrier= moves the band (5000 for a mic that stops at 8 kHz).
 // With bit loading, the page also listens on its microphone for the receiver's bursts around ?burst= Hz (default
 // 10000: quiet to the ear, above room noise, and the speaker's harmonics fall above the 14 kHz band; a mic that
-// stops at 8 kHz needs 3200): maps for the next frames, the blocks the receiver still lacks (sent next), and done
+// stops at 8 kHz needs 3200): maps for the next frames, how much of the message it has in order (sent from there if lost), and done
 // (sending stops).
 const params = new URLSearchParams(location.search);
 const carrier = Number(params.get('carrier') ?? 14000);
@@ -169,12 +169,13 @@ const QUALITIES = [0.75, 0.6, 0.5, 0.4, 0.3];
 const MIN_QUALITY = 0.4;     // a smaller image at this quality looks better than a larger one below it
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('../worker.js?v=15b4842b80', { type: 'module' });
+const worker = new Worker('../worker.js?v=2d32ad5e93', { type: 'module' });
 let file = null, message = null;      // the chosen file, and the bytes that will be sent
 let audio = null, timer = null, wakeLock = null, scheduled = 0, waiting = false, started = 0, frames = 0;
 let mic = null, micPeak = 0, sentBytes = 0, delivered = false;
 let analyser = null, floorDb = -Infinity;   // the mic's spectrum, and its level in the signal's band before playing
-let confirmed = null;    // the share of the message the receiver last reported having, or null
+let confirmed = null;    // the bytes the receiver last acknowledged having in order, or null
+let sentAtAck = 0;       // sentBytes then
 
 const seconds = () => Number($('seconds').value);
 
@@ -332,9 +333,9 @@ function heard(e) {
   }
   if (e.ignored) {
     log(`${at}  ignored a ${e.kind} burst from before this transmission`);
-  } else if (e.kind === 'status') {
+  } else if (e.kind === 'ack') {
     if (e.otherMessage) {
-      log(`${at}  heard a report on another message`);
+      log(`${at}  heard an acknowledgement of another message`);
     } else if (e.done) {
       const t = audio ? audio.currentTime - started : 0;
       log(`${at}  the receiver has it all: delivered in ${t.toFixed(0)} s`);
@@ -344,10 +345,10 @@ function heard(e) {
       stop();
       $('description').textContent = `Delivered ${message.length} bytes in ${t.toFixed(0)} s.`;
     } else {
-      log(`${at}  the receiver lacks ${e.missing} block${e.missing === 1 ? '' : 's'}: sending them next`);
-      const blocks = Math.ceil(message.length / Math.max(1, Math.ceil(message.length / 64)));   // MessageCursor's
-      confirmed = Math.max(0, (blocks - e.missing) / blocks);
-      $('heard').textContent = `${e.missing} missing`;
+      log(`${at}  the receiver has ${e.received} bytes in order` + (e.back ? ': going back to send from there' : ''));
+      confirmed = e.received;
+      sentAtAck = sentBytes;
+      $('heard').textContent = `${e.received} B in order`;
     }
   } else {
     $('map').textContent = `${e.id}, ${e.bitsPerSecond} bit/s`;
@@ -380,9 +381,11 @@ function tick() {
   $('frames').textContent = adapt ? `${frames} started` : `${sent}`;
   const passes = Math.max(0, (t - 1.75 - LEAD_SECONDS) * rate / 8 / message.length);
   $('passes').textContent = passes.toFixed(1);
-  // With bit loading, what the receiver last reported having, or until it reports, the bytes the frames carried; held
-  // short of full until it says done. Otherwise the first pass at the nominal rate.
-  const share = adapt ? Math.min(0.99, confirmed ?? sentBytes / message.length) : Math.min(1, passes);
+  // With bit loading, what the receiver last acknowledged and the bytes sent since (acknowledgements come only when
+  // there is a gap), or until it acknowledges, the bytes the frames carried; held short of full until it says done.
+  // Otherwise the first pass at the nominal rate.
+  const carried = confirmed === null ? sentBytes : confirmed + sentBytes - sentAtAck;
+  const share = adapt ? Math.min(0.99, carried / message.length) : Math.min(1, passes);
   showProgress(share, `${t.toFixed(0)} s`);
 }
 
@@ -406,6 +409,7 @@ async function start() {
   sentBytes = 0;
   delivered = false;
   confirmed = null;
+  sentAtAck = 0;
   $('link').toggleAttribute('hidden', !mic);
   $('link').classList.remove('heard', 'blink');
   $('status').hidden = false;
