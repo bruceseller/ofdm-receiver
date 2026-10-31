@@ -47,19 +47,16 @@
     font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .status[hidden] { display: none; }
   .ring { width: 44px; height: 44px; flex: none; overflow: visible; }
-  .ring circle { fill: none; stroke-width: 4; }
+  .ring circle:not(.pulse) { fill: none; stroke-width: 4; }
   .ring .track { stroke: var(--idle); }
   /* The return path, on the ring. Waiting for the receiver's first answer: the track dashed, lighter, turning slowly
-     (16 dashes, so the seam does not show). Then solid, and each burst heard sends a ping out from the ring. */
+     (16 dashes, so the seam does not show). Then solid, and each burst heard pulses the ring (#pulse). */
   .ring.waiting .track { stroke: var(--faint); stroke-dasharray: 4.32 4.32; transform-origin: center; transform-box: fill-box;
     animation: searching 8s linear infinite; }
   @keyframes searching { to { transform: rotate(360deg); } }
-  .ring .ping { stroke: var(--accent); stroke-width: 3; opacity: 0; transform-origin: center; transform-box: fill-box; }
-  .ring.pinging .ping { animation: ping .8s ease-out; }
-  @keyframes ping { 0% { transform: scale(1); opacity: .8; } 100% { transform: scale(1.4); opacity: 0; } }
+  .ring stop { stop-color: var(--accent); }
   @media (prefers-reduced-motion: reduce) {
     .ring.waiting .track { animation: none; }
-    .ring.pinging .ping { animation-duration: .01s; }
   }
   .ring .done { stroke: var(--accent); stroke-linecap: round; transition: stroke-dashoffset .3s; }
   .ring text { fill: var(--ink); font-size: 13px; font-weight: 600; text-anchor: middle; dominant-baseline: central; }
@@ -89,7 +86,21 @@
     <div class="status" id="status" hidden>
       <span id="progressText"></span>
       <svg class="ring" id="ring" viewBox="0 0 52 52" role="img" aria-label="Message sent; dashed until the receiver answers">
-        <circle class="ping" cx="26" cy="26" r="22"/>
+        <!-- The pulse, under the ring: a band from the ring's inner edge (radius 20) whose outer edge swells from the
+             ring's (24) to 29, solid, over 180 ms; then a gradient, solid inside and clear outside, whose clear edge
+             sweeps back in to the ring's by 600 ms. SMIL, so Safari and Chrome run it alike; started by pulse(). -->
+        <defs><radialGradient id="pulseFill" gradientUnits="userSpaceOnUse" cx="26" cy="26" r="29">
+          <stop offset="1" stop-opacity="0.9"><animate attributeName="offset" values="1;1;0.88;0.81" keyTimes="0;0.3;0.4;1"
+            dur="0.6s" begin="indefinite" fill="freeze"/></stop>
+          <stop offset="1" stop-opacity="0"><animate attributeName="offset" values="1;1;1;0.84" keyTimes="0;0.3;0.4;1"
+            dur="0.6s" begin="indefinite" fill="freeze"/></stop>
+        </radialGradient></defs>
+        <circle class="pulse" id="pulse" cx="26" cy="26" r="22" fill="none" stroke="url(#pulseFill)" stroke-width="4">
+          <animate attributeName="r" values="22;24.5;24.5" keyTimes="0;0.3;1" calcMode="spline"
+            keySplines="0.2 0.7 0.3 1;0 0 1 1" dur="0.6s" begin="indefinite" fill="freeze"/>
+          <animate attributeName="stroke-width" values="4;9;9" keyTimes="0;0.3;1" calcMode="spline"
+            keySplines="0.2 0.7 0.3 1;0 0 1 1" dur="0.6s" begin="indefinite" fill="freeze"/>
+        </circle>
         <circle class="track" cx="26" cy="26" r="22"/>
         <circle class="done" id="ringArc" cx="26" cy="26" r="22" transform="rotate(-90 26 26)"/>
         <text id="ringText" x="26" y="26">0%</text></svg>
@@ -194,12 +205,10 @@ function updateLink() {
 
 const RING = 2 * Math.PI * 22;
 
-/** A ping out from the ring: a burst heard from the receiver. */
-function ping() {
-  const ring = $('ring');
-  ring.classList.remove('pinging');
-  void ring.getBoundingClientRect();   // restarts the animation
-  ring.classList.add('pinging');
+/** A pulse of the ring: a burst heard from the receiver. Left out with reduced motion. */
+function pulse() {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  $('ring').querySelectorAll('animate').forEach(a => a.beginElement());
 }
 
 /** The ring: the share of the message sent, held short of full until the receiver says it has it all. */
@@ -361,7 +370,7 @@ worker.onmessage = ({ data }) => {
 /** A burst from the receiver. */
 function heard(e) {
   const at = `${e.seconds.toFixed(1)} s`;
-  if (!e.ignored && !e.otherMessage) ping();
+  if (!e.ignored && !e.otherMessage) pulse();
   if (e.ignored) {
     log(`${at}  ignored a ${e.kind} burst from before this transmission`);
   } else if (e.kind === 'ack') {
@@ -450,7 +459,6 @@ async function start() {
   confirmed = null;
   sentAtAck = 0;
   $('ring').classList.toggle('waiting', !!mic);   // until the receiver answers
-  $('ring').classList.remove('pinging');
   $('status').hidden = false;
   showProgress(0, '');
   started = audio.currentTime;
