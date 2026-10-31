@@ -124,6 +124,8 @@
       <span id="kind"></span>
     </div>
     <pre id="log"></pre>
+    <div id="upload"></div>
+    <div class="footer" id="uploadState"></div>
     <div class="footer"><span id="layout">Loading the receiver…</span> ·
       <button id="replay">replay a WAV</button><input type="file" id="file" accept="audio/*,.wav" hidden></div>
   </div>
@@ -132,6 +134,8 @@
 </main>
 
 <script type="module">
+import { settingsUi, startUpload, newId, idName } from './upload.js?v=cf5711f7e9';
+
 // The layout must match the transmitter's. The default, as the send page's, is bit loading on 200 subcarriers: the
 // receiver proposes maps and plays each back to the transmitter as a short burst of sound around ?burst= Hz (default
 // 10000, as the send page listens) at ?burstDb= dBFS (default -20). For TransmitWav --burst-listen on a mic that stops
@@ -156,8 +160,10 @@ const RATE_FRAMES = 5;   // the rate beside the bars: new message bytes in the l
 const FRAME_SECONDS = (4 + layout.symbols) * (layout.fft + Math.round(layout.prefix / 1000 * 6000)) / 6000;
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('worker.js?v=8942419882', { type: 'module' });
+const worker = new Worker('worker.js?v=d1aea21f3f', { type: 'module' });
 let audio = null, stream = null, replaying = false;
+let upload = null;    // this run's upload for analysis (upload.js), or null
+let transfer = null;  // the id of the transfer heard in start frames
 // Per layer: frames sent in two layers (?qam=qpsk+16) give a frame event for each.
 let framesOk = [0, 0], framesTotal = [0, 0], snrSum = 0;
 let message = null;   // {total, bytes, have, received, shown}
@@ -170,6 +176,8 @@ worker.onmessage = ({ data }) => {
     $('toggle').disabled = false;
   } else if (data.type === 'events') {
     data.events.forEach(show);
+    // Burst audio is left out: the receiver makes it again from the map it names.
+    upload?.events(data.events.map(e => e.type === 'burst' ? { ...e, samples: undefined } : e));
     if (data.last) {
       replaying = false;
       log('replay finished');
@@ -207,6 +215,10 @@ function log(line) {
 const signed = (x, digits) => (x >= 0 ? '+' : '') + x.toFixed(digits);
 
 function show(e) {
+  if (e.type === 'frame' && e.start && e.id !== transfer) {
+    transfer = e.id;
+    log(`${e.seconds.toFixed(1)} s  transfer ${idName(e.id)}, ${e.total} bytes`);
+  }
   if (e.type === 'level') {
     $('level').textContent = `${e.rmsDb.toFixed(0)} dBFS`;
     $('peak').textContent = `${e.peakDb.toFixed(0)}`;
@@ -504,7 +516,14 @@ async function start() {
     }
     await audio.audioWorklet.addModule('capture.js');
     const capture = new AudioWorkletNode(audio, 'capture', { numberOfOutputs: 1 });
-    capture.port.onmessage = ({ data }) => worker.postMessage({ type: 'samples', samples: data }, [data.buffer]);
+    const id = newId();
+    upload = startUpload('rx', id, { layout, device: stream.getAudioTracks()[0].label },
+      text => { $('uploadState').textContent = text; });
+    if (upload) log(`uploading this run as ${id.name}`);
+    capture.port.onmessage = ({ data }) => {
+      upload?.audio(data.slice());   // a copy: the worker takes the original
+      worker.postMessage({ type: 'samples', samples: data }, [data.buffer]);
+    };
     const mute = audio.createGain();
     mute.gain.value = 0;
     audio.createMediaStreamSource(stream).connect(capture).connect(mute).connect(audio.destination);
@@ -520,6 +539,9 @@ async function start() {
 }
 
 function stop() {
+  upload?.end();
+  upload = null;
+  transfer = null;
   stream?.getTracks().forEach(t => t.stop());
   audio?.close();
   stream = audio = null;
@@ -555,6 +577,7 @@ $('device').onchange = () => { if (stream) { stop(); start(); } };
 $('replay').onclick = () => $('file').click();
 $('file').onchange = e => { if (e.target.files[0]) replay(e.target.files[0]); e.target.value = ''; };
 if (layout.carrier !== 14000) $('sendLink').href = `send/?carrier=${layout.carrier}`;
+settingsUi($('upload'));
 reset();
 </script>
 </body>

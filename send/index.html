@@ -143,6 +143,8 @@
       <span>heard <b id="heard">–</b></span>
     </div>
     <pre id="log"></pre>
+    <div id="upload"></div>
+    <div class="footer" id="uploadState"></div>
     <div class="footer"><span id="description">Loading the transmitter…</span></div>
   </div>
   </details>
@@ -150,10 +152,12 @@
 </main>
 
 <script type="module">
+import { settingsUi, startUpload, newId } from '../upload.js?v=cf5711f7e9';
+
 // Sends an image (or any file) as sound, for the receiver page to decode. The layout must match the receiver's:
 // the receiver link below passes it on. The default is bit loading on 200 subcarriers, the receiver page's default;
-// others by parameter (?qam=qpsk,16 or ?qam=qpsk&subcarriers=100, with ?rate= their bit/s at map 0 to size images). Images are scaled and JPEG-encoded to fit the time per
-// pass at the layout's rate, and sent as a small thumbnail followed by the full image: browsers only make baseline
+// others by parameter (?qam=qpsk,16 or ?qam=qpsk&subcarriers=100, with ?rate= their bit/s at map 0 to size images). Images are scaled and JPEG-encoded to take about
+// TARGET_SECONDS at the layout's rate, and sent as a small thumbnail followed by the full image: browsers only make baseline
 // JPEGs, which would otherwise show only their top rows until complete. The receiver shows the thumbnail scaled up
 // until the full image has arrived. ?carrier= moves the band (5000 for a mic that stops at 8 kHz).
 // With bit loading, the page also listens on its microphone for the receiver's bursts around ?burst= Hz (default
@@ -183,10 +187,11 @@ const QUALITIES = [0.85, 0.75, 0.65, 0.5, 0.4, 0.3];
 const MIN_QUALITY = 0.65;
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('../worker.js?v=8942419882', { type: 'module' });
+const worker = new Worker('../worker.js?v=d1aea21f3f', { type: 'module' });
 let file = null, message = null;      // the chosen file, and the bytes that will be sent
 let audio = null, timer = null, wakeLock = null, scheduled = 0, waiting = false, started = 0, frames = 0;
 let mic = null, micPeak = 0, sentBytes = 0, delivered = false;
+let upload = null;       // this transmission's upload for analysis (upload.js), or null
 let analyser = null, floorDb = -Infinity;   // the mic's spectrum, and its level in the signal's band before playing
 let confirmed = null;    // the bytes the receiver last acknowledged having in order, or null
 let sentAtAck = 0;       // sentBytes then
@@ -359,6 +364,7 @@ worker.onmessage = ({ data }) => {
     scheduled = Math.max(scheduled, audio.currentTime + 0.05);
     source.start(scheduled);
     scheduled += buffer.duration;
+    upload?.events(data.events);
     for (const e of data.events) {
       if (e.type === 'txFrame') {
         frames++;
@@ -367,6 +373,7 @@ worker.onmessage = ({ data }) => {
     }
     fill();
   } else if (data.type === 'events') {
+    upload?.events(data.events);
     data.events.forEach(heard);
   }
 };
@@ -452,11 +459,17 @@ async function start() {
   } catch {
     wakeLock = null;
   }
-  // The mic first: only with it does the transmitter hold the message until the receiver answers.
+  // The mic first: only with it does the transmitter hold the message until the receiver answers. The transfer's
+  // id goes out in the start frames, so the receiver can tag its upload with it.
   answered = false;
   if (adapt) await listen();
+  const id = newId();
+  const transmitLayout = { qam, carrier, symbols: 8, fft: 256, subcarriers, prefix: 20, burst: mic ? burst : 0, id: id.hex };
   worker.postMessage({ type: 'transmit', message: message.buffer.slice(0), lead: mic ? 0 : LEAD_SECONDS,
-    layout: { qam, carrier, symbols: 8, fft: 256, subcarriers, prefix: 20, burst: mic ? burst : 0 } });
+    layout: transmitLayout });
+  upload = startUpload('tx', id, { layout: transmitLayout, file: file.name, type: file.type, bytes: message.length,
+    device: mic?.getAudioTracks()[0].label }, text => { $('uploadState').textContent = text; });
+  log(`transfer ${id.name}` + (upload ? ', uploading' : ''));
   sending = true;
   sentBytes = 0;
   delivered = false;
@@ -485,7 +498,9 @@ async function listen() {
     const capture = new AudioWorkletNode(audio, 'capture', { numberOfOutputs: 1 });
     capture.port.onmessage = ({ data }) => {
       for (let i = 0; i < data.length; i++) micPeak = Math.max(micPeak, Math.abs(data[i]));
-      if (sending) worker.postMessage({ type: 'heard', samples: data }, [data.buffer]);
+      if (!sending) return;
+      upload?.audio(data.slice());   // a copy: the worker takes the original
+      worker.postMessage({ type: 'heard', samples: data }, [data.buffer]);
     };
     const mute = audio.createGain();
     mute.gain.value = 0;
@@ -546,6 +561,8 @@ function checkHeard(t, margin) {
 
 function stop() {
   sending = false;
+  upload?.end();
+  upload = null;
   mic?.getTracks().forEach(t => t.stop());
   mic = analyser = null;
   if ($('warn').textContent === MUTED_WARNING) $('warn').textContent = '';
@@ -568,6 +585,7 @@ function setLive(live) {
 $('toggle').onclick = () => (audio ? stop() : start());
 $('file').onchange = e => { if (e.target.files[0]) { file = e.target.files[0]; prepare(); } };
 $('change').onclick = () => { if (!audio) $('file').click(); };
+settingsUi($('upload'));
 updateLink();
 $('description').textContent = 'Choose a file, then press play.';
 </script>
