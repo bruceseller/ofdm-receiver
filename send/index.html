@@ -366,12 +366,14 @@ function fill() {
 
 function tick() {
   fill();
-  if (mic) {
-    $('mic').textContent = `${(20 * Math.log10(micPeak + 1e-9)).toFixed(0)} dBFS pk`;
-    micPeak = 0;
-  }
   const t = audio.currentTime - started;
-  checkHeard(t);
+  if (mic) {
+    const margin = analyser && isFinite(floorDb) ? bandDb() - floorDb : NaN;
+    $('mic').textContent = `${(20 * Math.log10(micPeak + 1e-9)).toFixed(0)} dBFS pk` +
+      (isFinite(margin) ? `, band ${margin >= 0 ? '+' : ''}${margin.toFixed(0)} dB` : '');
+    micPeak = 0;
+    checkHeard(t, margin);
+  }
   $('time').textContent = `${t.toFixed(0)} s`;
   const frameSeconds = 0.752;
   const sent = Math.max(0, Math.floor((t - 1.75) / frameSeconds));
@@ -438,12 +440,17 @@ async function listen() {
     analyser.fftSize = 2048;
     analyser.smoothingTimeConstant = 0.5;
     source.connect(analyser).connect(mute);
-    // The band's level before anything plays, the highest of a few looks (the mic may start with zeros).
-    floorDb = -Infinity;
-    for (let i = 0; i < 4; i++) {
-      await new Promise(done => setTimeout(done, 100));
-      floorDb = Math.max(floorDb, bandDb());
+    // The band's level before anything plays: the median of a few looks once the mic has settled (it may start
+    // with zeros, or a click, either of which would set the floor wrong for the whole transmission).
+    const wait = ms => new Promise(done => setTimeout(done, ms));
+    await wait(300);
+    const looks = [];
+    for (let i = 0; i < 5; i++) {
+      await wait(100);
+      looks.push(bandDb());
     }
+    const finite = looks.filter(isFinite).sort((a, b) => a - b);
+    floorDb = finite.length ? finite[finite.length >> 1] : -Infinity;
     log(`listening on ${mic.getAudioTracks()[0].label || 'the microphone'} for bursts around ${burst} Hz`);
   } catch (err) {
     mic = null;
@@ -469,12 +476,13 @@ function bandDb() {
   return 10 * Math.log10(power);
 }
 
-function checkHeard(t) {
-  if (!analyser || t < CHECK_AFTER || !isFinite(floorDb)) return;
-  const muted = bandDb() < floorDb + HEARD_MARGIN_DB;
+/** Warns while the band stands less than HEARD_MARGIN_DB above its level before playing (`margin`), and clears after. */
+function checkHeard(t, margin) {
+  if (t < CHECK_AFTER || isNaN(margin)) return;
+  const muted = margin < HEARD_MARGIN_DB;
   if (muted && !$('warn').textContent) {
     $('warn').textContent = MUTED_WARNING;
-    log(`${t.toFixed(1)} s  the mic does not hear the signal (band ${(bandDb() - floorDb).toFixed(0)} dB over its level before)`);
+    log(`${t.toFixed(1)} s  the mic does not hear the signal (band ${margin.toFixed(0)} dB over its level before)`);
   } else if (!muted && $('warn').textContent === MUTED_WARNING) {
     $('warn').textContent = '';
     log(`${t.toFixed(1)} s  the mic hears the signal again`);

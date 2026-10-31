@@ -45,11 +45,9 @@
 
   .signal { display: flex; align-items: center; gap: 6px; flex: none; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .signal svg { width: 38px; height: 20px; }
-  .signal rect { fill: var(--idle); }
-  /* Each bar a tenth of the subcarriers, by what they carry: 64-QAM darkest, then 16-QAM, QPSK; off stays idle. */
-  .signal rect.t3 { fill: var(--ink); }
-  .signal rect.t2 { fill: var(--ink); fill-opacity: .6; }
-  .signal rect.t1 { fill: var(--ink); fill-opacity: .32; }
+  /* Each bar a tenth of the subcarriers, as tall as what they carry (QPSK, 16-QAM, 64-QAM); off a grey stub. */
+  .signal rect { fill: var(--ink); }
+  .signal rect.off { fill: var(--idle); }
   /* Listening with nothing decoding: a phone's "no service", a dot where each bar stands. */
   .signal circle { fill: var(--muted); display: none; }
   .signal.offline rect { display: none; }
@@ -86,7 +84,7 @@
     </button>
     <select id="device" hidden aria-label="Microphone"></select>
     <h1>OFDM Receiver</h1>
-    <div class="signal" id="signal" title="Subcarriers by modulation: 64-QAM darkest, then 16-QAM, QPSK, off">
+    <div class="signal" id="signal" title="Subcarriers by modulation: the taller the bar, the more bits (QPSK, 16-QAM, 64-QAM)">
       <svg id="bars" viewBox="0 0 38 20" aria-hidden="true"></svg>
       <span id="rate"></span>
     </div>
@@ -391,7 +389,8 @@ let rateNow = 0;      // the receiver time showRate last saw
 
 const BARS = 10;
 $('bars').innerHTML = Array.from({ length: BARS }, (_, i) =>
-  `<rect x="${4 * i}" y="2" width="2.6" height="16" rx=".8"/><circle cx="${4 * i + 1.3}" cy="16.5" r="1.3"/>`).join('');
+  `<rect x="${4 * i}" width="2.8" rx=".8"/><circle cx="${4 * i + 1.4}" cy="18.4" r="1.4"/>`).join('');
+const HEIGHTS = [5, 9, 14, 20];   // off, QPSK, 16-QAM, 64-QAM, as the steps of a phone's bars
 
 /** The subcarriers in each tier for a layout without bit loading: each layer (?qam=qpsk+16) on its share. */
 function fixedTiers() {
@@ -402,9 +401,9 @@ function fixedTiers() {
 }
 
 /**
- * The bars: BARS of the same shape, shared among the last frame's tiers in proportion to their subcarriers (largest
- * remainder), the highest first; dots while listening with nothing decoded in the last RATE_WINDOW seconds. Beside
- * them, the message bits decoded in that time.
+ * The bars: BARS shared among the last frame's tiers in proportion to their subcarriers (largest remainder), each as
+ * tall as its tier, rising left to right; grey stubs before any frame, dots while listening with nothing decoded in
+ * the last RATE_WINDOW seconds. Beside them, the message bits decoded in that time.
  */
 function showRate(now = rateNow) {
   rateNow = now;
@@ -419,12 +418,16 @@ function showRate(now = rateNow) {
     bars[t]++;
     share[t] = bars[t];   // its remainder is spent
   }
-  const classes = [3, 2, 1, 0].flatMap(t => Array(bars[t]).fill(`t${t}`));
-  $('bars').querySelectorAll('rect').forEach((bar, i) => bar.setAttribute('class', classes[i]));
+  const order = [0, 1, 2, 3].flatMap(t => Array(bars[t]).fill(t));   // rising, as a phone's bars
+  $('bars').querySelectorAll('rect').forEach((bar, i) => {
+    bar.setAttribute('y', 20 - HEIGHTS[order[i]]);
+    bar.setAttribute('height', HEIGHTS[order[i]]);
+    bar.setAttribute('class', order[i] === 0 ? 'off' : '');
+  });
   const names = ['off', 'QPSK', '16-QAM', '64-QAM'];
   $('signal').title = rate > 0 && tiers
     ? 'Subcarriers: ' + [3, 2, 1, 0].filter(t => tiers[t]).map(t => `${names[t]} ${tiers[t]}`).join(' · ')
-    : 'Subcarriers by modulation: 64-QAM darkest, then 16-QAM, QPSK, off';
+    : 'Subcarriers by modulation: the taller the bar, the more bits (QPSK, 16-QAM, 64-QAM)';
   const offline = rate === 0 && (stream !== null || replaying);
   $('signal').classList.toggle('offline', offline);
   $('rate').textContent = rate > 0 ? `${(rate / 1000).toFixed(1)} kbit/s` : '';
