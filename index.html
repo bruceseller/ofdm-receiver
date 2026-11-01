@@ -160,7 +160,7 @@ const RATE_FRAMES = 5;   // the rate beside the bars: new message bytes in the l
 const FRAME_SECONDS = (4 + layout.symbols) * (layout.fft + Math.round(layout.prefix / 1000 * 6000)) / 6000;
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('worker.js?v=2eb58b3f30', { type: 'module' });
+const worker = new Worker('worker.js?v=0a3cbbbfea', { type: 'module' });
 let audio = null, stream = null, replaying = false;
 let upload = null;    // this run's upload for analysis (upload.js), or null
 let transfer = null;  // the id of the transfer heard in start frames
