@@ -52,14 +52,27 @@ export function settings() {
   return s;
 }
 
+/**
+ * The server's address from what was typed: a quick tunnel's name alone (porter-synthetic-selling-probe) becomes
+ * https://porter-synthetic-selling-probe.trycloudflare.com; a host without a scheme gets https:// (http:// for this
+ * machine); a full address is kept. Without a trailing slash.
+ */
+export function serverAddress(typed) {
+  let a = typed.trim().replace(/\/+$/, '');
+  if (!a || /^[a-z]+:\/\//i.test(a)) return a;
+  if (!/[.:]/.test(a) && a !== 'localhost') a += '.trycloudflare.com';
+  return (/^(localhost|127\.0\.0\.1)(:|$)/.test(a) ? 'http://' : 'https://') + a;
+}
+
 /** Draws the settings into `container`: the checkbox, and when ticked, the address, token and a test. */
 export function settingsUi(container) {
   const s = settings();
   container.innerHTML = `
     <label class="upload-on"><input type="checkbox"> Upload runs for analysis</label>
     <div class="upload-config">
-      <label>server <input type="url" placeholder="https://….trycloudflare.com" autocomplete="off" spellcheck="false"></label>
-      <label>token <input type="password" autocomplete="off"></label>
+      <label>server <input type="text" inputmode="url" placeholder="tunnel name, or address" autocomplete="off"
+        autocapitalize="off" spellcheck="false"></label>
+      <label>token <input type="password" inputmode="numeric" autocomplete="off"></label>
       <button type="button">test</button> <span class="upload-status"></span>
     </div>`;
   const [on, url, token] = container.querySelectorAll('input');
@@ -70,7 +83,8 @@ export function settingsUi(container) {
   token.value = s.token;
   config.hidden = !s.on;
   const update = () => {
-    save({ on: on.checked, url: url.value.trim().replace(/\/+$/, ''), token: token.value.trim() });
+    url.value = serverAddress(url.value);
+    save({ on: on.checked, url: url.value, token: token.value.trim() });
     config.hidden = !on.checked;
   };
   on.onchange = url.onchange = token.onchange = update;
