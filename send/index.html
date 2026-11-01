@@ -18,7 +18,10 @@
     font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
   main { max-width: 640px; margin: 0 auto; padding: 16px 16px 40px; }
   header { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
-  h1 { font-size: 16px; font-weight: 650; margin: 0 auto 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .title { margin: 0 auto 0 4px; min-width: 0; }
+  h1 { font-size: 16px; font-weight: 650; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .summary { font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums; }
   select, input[type=range] { font: inherit; font-size: 13px; color: var(--ink); }
   select { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; max-width: 100%; }
   .icon { width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel);
@@ -83,7 +86,7 @@
       <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
       <svg id="stopIcon" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
     </button>
-    <h1>OFDM Sender</h1>
+    <div class="title"><h1>OFDM Sender</h1><div class="summary" id="summary"></div></div>
     <div class="status" id="status" hidden>
       <span id="progressText"></span>
       <svg class="ring" id="ring" viewBox="0 0 52 52" role="img" aria-label="Message sent; dashed until the receiver answers">
@@ -111,6 +114,9 @@
     </div>
   </header>
 
+  <nav class="tabs" role="tablist"><button type="button" role="tab">Send</button><button type="button" role="tab">Settings</button></nav>
+
+  <div id="mainPane">
   <input type="file" id="file" accept="image/*,text/*,*/*">
   <section class="stage">
     <div class="view" id="view">
@@ -143,16 +149,24 @@
       <span>heard <b id="heard">–</b></span>
     </div>
     <pre id="log"></pre>
-    <div id="upload"></div>
     <div class="footer" id="uploadState"></div>
     <div class="footer"><span id="description">Loading the transmitter…</span></div>
   </div>
   </details>
   <div class="links"><button id="change">Choose another file</button> · <a id="receiverLink" href="../">Receiver</a></div>
+  </div>
+
+  <div id="settingsPane" hidden>
+    <div id="settings"></div>
+    <p class="settings-note">The receiver must use the same settings. A change applies to the next send; settings are
+      locked while sending.</p>
+    <div id="upload"></div>
+  </div>
 </main>
 
 <script type="module">
 import { settingsUi, startUpload, newId } from '../upload.js?v=cf5711f7e9';
+import { readLayout, summary, settingsTab, tabs } from '../settings.js?v=ae8e06403f';
 
 // Sends an image (or any file) as sound, for the receiver page to decode. The layout must match the receiver's:
 // the receiver link below passes it on. The default is bit loading on 200 subcarriers, the receiver page's default;
@@ -164,15 +178,10 @@ import { settingsUi, startUpload, newId } from '../upload.js?v=cf5711f7e9';
 // 10000: quiet to the ear, above room noise, and the speaker's harmonics fall above the 14 kHz band; a mic that
 // stops at 8 kHz needs 3200): maps for the next frames, how much of the message it has in order (sent from there if lost), and done
 // (sending stops).
+// The settings tab (settings.js) changes the layout in place, without reloading; applyLayout() works out the rest.
 const params = new URLSearchParams(location.search);
-const carrier = Number(params.get('carrier') ?? 14000);
-const burst = Number(params.get('burst') ?? 10000);
-const qam = (params.get('qam') ?? 'adapt').replace(/[ ,]/g, '+');
-const subcarriers = Number(params.get('subcarriers') ?? 200);
-const adapt = qam === 'adapt';
-// The rate (information bits per second) images are sized for. With bit loading, a phone close by: the backchannel
-// takes the link well above map 0's 2120 bit/s.
-const rate = Number(params.get('rate') ?? (adapt ? 5000 : 2120));
+const layout = readLayout();
+let carrier, burst, qam, subcarriers, symbols, adapt, rate;
 const RATE = 48000;
 // Without a backchannel the message loops, its start coming round about LEAD_SECONDS after the frames begin (so a
 // receiver has locked by then). With one, start frames go out until the receiver answers, and the message then starts.
@@ -187,7 +196,7 @@ const QUALITIES = [0.85, 0.75, 0.65, 0.5, 0.4, 0.3];
 const MIN_QUALITY = 0.65;
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('../worker.js?v=0a3cbbbfea', { type: 'module' });
+const worker = new Worker('../worker.js?v=20e770b026', { type: 'module' });
 let file = null, message = null;      // the chosen file, and the bytes that will be sent
 let audio = null, timer = null, wakeLock = null, scheduled = 0, waiting = false, started = 0, frames = 0;
 let mic = null, micPeak = 0, sentBytes = 0, delivered = false;
@@ -205,11 +214,16 @@ function log(line) {
   el.scrollTop = el.scrollHeight;
 }
 
-function updateLink() {
-  const url = new URL('../', location.href);
-  for (const key of ['qam', 'subcarriers', 'carrier', 'burst']) if (params.has(key)) url.searchParams.set(key, params.get(key));
+/** What follows from the layout, worked out again when the settings change. */
+function applyLayout() {
+  ({ carrier, burst, qam, subcarriers, symbols } = layout);
+  adapt = qam === 'adapt';
+  // The rate (information bits per second) images are sized for. With bit loading, a phone close by: the backchannel
+  // takes the link well above map 0's 2120 bit/s.
+  rate = Number(params.get('rate') ?? (adapt ? 5000 : 2120));
   $('backRow').hidden = !adapt;
-  $('receiverLink').href = url.href;
+  $('receiverLink').href = '../' + location.search;
+  $('summary').textContent = summary(layout);
 }
 
 const RING = 2 * Math.PI * 22;
@@ -432,7 +446,7 @@ function tick() {
     checkHeard(t, margin);
   }
   $('time').textContent = `${t.toFixed(0)} s`;
-  const frameSeconds = 0.752;
+  const frameSeconds = (layout.preambles + symbols) * (layout.fft + Math.round(layout.prefix / 1000 * 6000)) / 6000;
   const sent = Math.max(0, Math.floor((t - 1.75) / frameSeconds));
   $('frames').textContent = adapt ? `${frames} started` : `${sent}`;
   const passes = Math.max(0, (t - 1.75 - LEAD_SECONDS) * rate / 8 / message.length);
@@ -464,7 +478,8 @@ async function start() {
   answered = false;
   if (adapt) await listen();
   const id = newId();
-  const transmitLayout = { qam, carrier, symbols: 8, fft: 256, subcarriers, prefix: 20, burst: mic ? burst : 0, id: id.hex };
+  const transmitLayout = { qam, carrier, symbols, preambles: layout.preambles, fft: layout.fft, subcarriers,
+    prefix: layout.prefix, burst: mic ? burst : 0, id: id.hex };
   worker.postMessage({ type: 'transmit', message: message.buffer.slice(0), lead: mic ? 0 : LEAD_SECONDS,
     layout: transmitLayout });
   upload = startUpload('tx', id, { layout: transmitLayout, file: file.name, type: file.type, bytes: message.length,
@@ -540,7 +555,7 @@ function bandDb() {
   const bins = new Float32Array(analyser.frequencyBinCount);
   analyser.getFloatFrequencyData(bins);
   const hz = RATE / analyser.fftSize;
-  const half = subcarriers * 6000 / 256 / 2;
+  const half = subcarriers * 6000 / layout.fft / 2;
   let power = 0;
   for (let k = Math.ceil((carrier - half) / hz); k <= Math.floor((carrier + half) / hz); k++) power += 10 ** (bins[k] / 10);
   return 10 * Math.log10(power);
@@ -580,13 +595,17 @@ function setLive(live) {
   button.title = live ? 'Stop' : 'Send';
   button.setAttribute('aria-label', button.title);
   $('file').disabled = live;
+  settingsControl.lock(live);
 }
 
 $('toggle').onclick = () => (audio ? stop() : start());
 $('file').onchange = e => { if (e.target.files[0]) { file = e.target.files[0]; prepare(); } };
 $('change').onclick = () => { if (!audio) $('file').click(); };
+applyLayout();
+// A change applies to the next send; an image is sized again for the new rate.
+const settingsControl = settingsTab($('settings'), layout, () => { applyLayout(); if (file && !audio) prepare(); });
+tabs(document.querySelector('.tabs'), [$('mainPane'), $('settingsPane')]);
 settingsUi($('upload'));
-updateLink();
 $('description').textContent = 'Choose a file, then press play.';
 </script>
 </body>

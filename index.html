@@ -19,7 +19,10 @@
   main { max-width: 640px; margin: 0 auto; padding: 16px 16px 40px; }
 
   header { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
-  h1 { font-size: 16px; font-weight: 650; margin: 0 auto 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .title { margin: 0 auto 0 4px; min-width: 0; }
+  h1 { font-size: 16px; font-weight: 650; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .summary { font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums; }
   select { font: inherit; font-size: 13px; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
     border-radius: 8px; padding: 6px 8px; max-width: 140px; min-width: 0; }
   .icon { width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel);
@@ -83,7 +86,7 @@
       <svg id="stopIcon" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
     </button>
     <select id="device" hidden aria-label="Microphone"></select>
-    <h1>OFDM Receiver</h1>
+    <div class="title"><h1>OFDM Receiver</h1><div class="summary" id="summary"></div></div>
     <div class="signal" id="signal" title="Subcarriers by modulation: the taller the bar, the more bits (QPSK, 16-QAM, 64-QAM)">
       <svg id="bars" viewBox="0 0 38 20" aria-hidden="true"></svg>
       <span id="rate"></span>
@@ -94,6 +97,9 @@
       <text id="ringText" x="26" y="26">0%</text></svg>
   </header>
 
+  <nav class="tabs" role="tablist"><button type="button" role="tab">Receive</button><button type="button" role="tab">Settings</button></nav>
+
+  <div id="mainPane">
   <section class="stage">
     <div class="view" id="view">
       <img id="image" alt="Received image">
@@ -124,43 +130,49 @@
       <span id="kind"></span>
     </div>
     <pre id="log"></pre>
-    <div id="upload"></div>
     <div class="footer" id="uploadState"></div>
     <div class="footer"><span id="layout">Loading the receiver…</span> ·
       <button id="replay">replay a WAV</button><input type="file" id="file" accept="audio/*,.wav" hidden></div>
   </div>
   </details>
   <div class="links"><a id="sendLink" href="send/">Send something</a></div>
+  </div>
+
+  <div id="settingsPane" hidden>
+    <div id="settings"></div>
+    <p class="settings-note">The sender must use the same settings. A change applies at once,
+      restarting the receiver if it is listening.</p>
+    <div id="upload"></div>
+  </div>
 </main>
 
 <script type="module">
 import { settingsUi, startUpload, newId, idName } from './upload.js?v=cf5711f7e9';
+import { readLayout, summary, settingsTab, tabs } from './settings.js?v=ae8e06403f';
 
 // The layout must match the transmitter's. The default, as the send page's, is bit loading on 200 subcarriers: the
 // receiver proposes maps and plays each back to the transmitter as a short burst of sound around ?burst= Hz (default
 // 10000, as the send page listens) at ?burstDb= dBFS (default -20). For TransmitWav --burst-listen on a mic that stops
 // at 8 kHz (the Dell), use ?burst=3200. Other layouts by parameter: ?qam=qpsk,16 is two layers (QPSK on the even
 // subcarriers, 16-QAM on the odd ones), pure/ one constellation on 100 subcarriers, ?carrier=5000 for the Dell.
-const params = new URLSearchParams(location.search);
-const layout = {
-  qam: (params.get('qam') ?? 'adapt').replace(/[ ,]/g, '+'),   // two layers as ?qam=qpsk,16 (a + in a URL reads as a space)
-  carrier: Number(params.get('carrier') ?? 14000),
-  symbols: Number(params.get('symbols') ?? 8),
-  fft: Number(params.get('fft') ?? 256),
-  subcarriers: Number(params.get('subcarriers') ?? 200),
-  prefix: Number(params.get('prefix') ?? 20),
-  burst: Number(params.get('burst') ?? 10000),
-  burstDb: Number(params.get('burstDb') ?? -20),
-};
-const adapt = layout.qam === 'adapt';
+// The settings tab (settings.js) changes these in place, without reloading.
+const layout = readLayout();
+let adapt, FRAME_SECONDS;
 const RATE = 48000;
 const MISSING = '░';
 const RATE_WINDOW = 4;   // seconds without a good frame before the bars turn to dots
 const RATE_FRAMES = 5;   // the rate beside the bars: new message bytes in the last this many frames, over their time
-const FRAME_SECONDS = (4 + layout.symbols) * (layout.fft + Math.round(layout.prefix / 1000 * 6000)) / 6000;
+
+/** What follows from the layout, worked out again when the settings change. */
+function applyLayout() {
+  adapt = layout.qam === 'adapt';
+  FRAME_SECONDS = (layout.preambles + layout.symbols) * (layout.fft + Math.round(layout.prefix / 1000 * 6000)) / 6000;
+  $('summary').textContent = summary(layout);
+  $('sendLink').href = 'send/' + location.search;
+}
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('worker.js?v=0a3cbbbfea', { type: 'module' });
+const worker = new Worker('worker.js?v=20e770b026', { type: 'module' });
 let audio = null, stream = null, replaying = false;
 let upload = null;    // this run's upload for analysis (upload.js), or null
 let transfer = null;  // the id of the transfer heard in start frames
@@ -516,10 +528,7 @@ async function start() {
     }
     await audio.audioWorklet.addModule('capture.js');
     const capture = new AudioWorkletNode(audio, 'capture', { numberOfOutputs: 1 });
-    const id = newId();
-    upload = startUpload('rx', id, { layout, device: stream.getAudioTracks()[0].label },
-      text => { $('uploadState').textContent = text; });
-    if (upload) log(`uploading this run as ${id.name}`);
+    startRunUpload();
     capture.port.onmessage = ({ data }) => {
       upload?.audio(data.slice());   // a copy: the worker takes the original
       worker.postMessage({ type: 'samples', samples: data }, [data.buffer]);
@@ -535,6 +544,27 @@ async function start() {
   } catch (err) {
     $('warn').textContent = `Could not start the microphone: ${err.message}`;
     stop();
+  }
+}
+
+/** An upload of this run for analysis, if uploads are on: from the mic's start, or a settings change. */
+function startRunUpload() {
+  const id = newId();
+  upload = startUpload('rx', id, { layout: { ...layout }, device: stream.getAudioTracks()[0].label },
+    text => { $('uploadState').textContent = text; });
+  if (upload) log(`uploading this run as ${id.name}`);
+}
+
+/** A settings change: the receiver starts again on the new layout, and if listening, so does the upload. */
+function changeLayout() {
+  applyLayout();
+  if (replaying) return;
+  upload?.end();
+  upload = null;
+  reset();
+  if (stream) {
+    log(`settings changed: ${summary(layout)}`);
+    startRunUpload();
   }
 }
 
@@ -576,7 +606,9 @@ $('toggle').onclick = () => (stream ? stop() : start());
 $('device').onchange = () => { if (stream) { stop(); start(); } };
 $('replay').onclick = () => $('file').click();
 $('file').onchange = e => { if (e.target.files[0]) replay(e.target.files[0]); e.target.value = ''; };
-if (layout.carrier !== 14000) $('sendLink').href = `send/?carrier=${layout.carrier}`;
+applyLayout();
+settingsTab($('settings'), layout, changeLayout);
+tabs(document.querySelector('.tabs'), [$('mainPane'), $('settingsPane')]);
 settingsUi($('upload'));
 reset();
 </script>

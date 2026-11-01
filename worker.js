@@ -7,18 +7,18 @@
 //   Out: {type: 'transmitting', description} and {type: 'pulled', samples: Float32Array, events: [...]}.
 //   With layout.qam 'adapt' and layout.burst (Hz), it also listens for the receiver's bursts:
 //   in {type: 'heard', samples: Float32Array} from the microphone, out {type: 'events', events: [...]}.
-import { configure, push, backchannel, transmit, transmitPull, transmitListen, transmitHeard } from './ofdm.js?v=0a3cbbbfea';
+import { configure, push, backchannel, transmit, transmitPull, transmitListen, transmitHeard } from './ofdm.js?v=20e770b026';
 
 onmessage = ({ data }) => {
   if (data.type === 'configure') {
     const l = data.layout;
-    let description = configure(l.qam, l.carrier, l.symbols, l.fft, l.subcarriers, l.prefix);
+    let description = configure(l.qam, l.carrier, l.symbols, l.fft, l.subcarriers, l.prefix, l.preambles ?? 4);
     if (l.qam === 'adapt') description += '; ' + backchannel(l.burst, l.burstDb);
     postMessage({ type: 'configured', description });
   } else if (data.type === 'transmit') {
     const l = data.layout;
     let description = transmit(l.qam, l.carrier, l.symbols, l.fft, l.subcarriers, l.prefix,
-      new Int8Array(data.message), data.lead);
+      new Int8Array(data.message), data.lead, l.preambles ?? 4);
     if (l.qam === 'adapt' && l.burst) description += '; ' + transmitListen(l.burst, l.id ?? '');
     postMessage({ type: 'transmitting', description });
   } else if (data.type === 'heard') {
