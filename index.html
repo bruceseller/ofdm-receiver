@@ -131,6 +131,7 @@
     </div>
     <pre id="log"></pre>
     <div class="footer" id="uploadState"></div>
+    <div class="footer">build <span id="build"></span></div>
     <div class="footer"><span id="layout">Loading the receiver…</span> ·
       <button id="replay">replay a WAV</button><input type="file" id="file" accept="audio/*,.wav" hidden></div>
   </div>
@@ -159,6 +160,7 @@ import { readLayout, summary, settingsTab, tabs } from './settings.js?v=ae8e0640
 const layout = readLayout();
 let adapt, FRAME_SECONDS;
 const RATE = 48000;
+const BUILD = 'da75915+';   // the build stamps the git commit here (+ for uncommitted changes), shown in Details
 const MISSING = '░';
 const RATE_WINDOW = 4;   // seconds without a good frame before the bars turn to dots
 const RATE_FRAMES = 5;   // the rate beside the bars: new message bytes in the last this many frames, over their time
@@ -172,7 +174,7 @@ function applyLayout() {
 }
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('worker.js?v=279d4b7a6e', { type: 'module' });
+const worker = new Worker('worker.js?v=41bd891c97', { type: 'module' });
 let audio = null, stream = null, replaying = false;
 let upload = null;    // this run's upload for analysis (upload.js), or null
 let transfer = null;  // the id of the transfer heard in start frames
@@ -611,6 +613,7 @@ settingsTab($('settings'), layout, changeLayout);
 tabs(document.querySelector('.tabs'), [$('mainPane'), $('settingsPane')]);
 settingsUi($('upload'));
 reset();
+$('build').textContent = BUILD;
 </script>
 </body>
 </html>

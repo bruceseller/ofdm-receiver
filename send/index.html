@@ -150,6 +150,7 @@
     </div>
     <pre id="log"></pre>
     <div class="footer" id="uploadState"></div>
+    <div class="footer">build <span id="build"></span></div>
     <div class="footer"><span id="description">Loading the transmitter…</span></div>
   </div>
   </details>
@@ -183,6 +184,7 @@ const params = new URLSearchParams(location.search);
 const layout = readLayout();
 let carrier, burst, qam, subcarriers, symbols, adapt, rate;
 const RATE = 48000;
+const BUILD = 'da75915+';   // the build stamps the git commit here (+ for uncommitted changes), shown in Details
 // Without a backchannel the message loops, its start coming round about LEAD_SECONDS after the frames begin (so a
 // receiver has locked by then). With one, start frames go out until the receiver answers, and the message then starts.
 const LEAD_SECONDS = 5;
@@ -196,7 +198,7 @@ const QUALITIES = [0.85, 0.75, 0.65, 0.5, 0.4, 0.3];
 const MIN_QUALITY = 0.65;
 
 const $ = id => document.getElementById(id);
-const worker = new Worker('../worker.js?v=279d4b7a6e', { type: 'module' });
+const worker = new Worker('../worker.js?v=41bd891c97', { type: 'module' });
 let file = null, message = null;      // the chosen file, and the bytes that will be sent
 let audio = null, timer = null, wakeLock = null, scheduled = 0, waiting = false, started = 0, frames = 0;
 let mic = null, micPeak = 0, sentBytes = 0, delivered = false;
@@ -607,6 +609,7 @@ const settingsControl = settingsTab($('settings'), layout, () => { applyLayout()
 tabs(document.querySelector('.tabs'), [$('mainPane'), $('settingsPane')]);
 settingsUi($('upload'));
 $('description').textContent = 'Choose a file, then press play.';
+$('build').textContent = BUILD;
 </script>
 </body>
 </html>
